@@ -1,0 +1,9 @@
+[wrap-git]
+directory = blobify-talisein-edc6cdc
+url = https://github.com/talisein/blobify.git
+revision = edc6cdc9b328fff5ec4ec137f563161ad84f3b59
+branch = master
+depth = 1
+
+[provide]
+blobify = blobify_dep
