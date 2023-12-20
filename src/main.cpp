@@ -39,8 +39,29 @@ https://myip.dnsomatic.com
 https://checkip.amazonaws.com
 http://whatismyip.akamai.com
 https://myipv4.p1.opendns.com/get_my_ip
+
 dig +short ANY whoami.akamai.net @ns1-1.akamaitech.net
-dig +short ANY o-o.myaddr.l.google.com @ns1.google.com
+dig +short TXT whoami.ds.akahelp.net
+whoami.ipv4.akahelp.net
+whoami.ipv6.akahelp.net
+https://www.akamai.com/blog/developers/introducing-new-whoami-tool-dns-resolver-information
+
+dig +short ANY o-o.myaddr.l.google.com @ns1.google.com // maybe @dns.google ?
+
+
+
+
+    curl ifconfig.me
+    curl -4/-6 icanhazip.com
+    curl ipinfo.io/ip
+    curl api.ipify.org
+    curl checkip.dyndns.org
+    dig +short myip.opendns.com @resolver1.opendns.com
+    host myip.opendns.com resolver1.opendns.com
+    curl ident.me
+    curl bot.whatismyipaddress.com
+    curl ipecho.net/plain
+
 */
 
 
