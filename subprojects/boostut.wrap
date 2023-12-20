@@ -1,0 +1,4 @@
+[wrap-git]
+url = https://github.com/boost-ext/ut.git
+revision = v2.0.0
+directory = ut-v2.0.0
