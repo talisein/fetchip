@@ -1,79 +1,17 @@
 #include <algorithm>
 #include <expected>
 #include <source_location>
-#include <sstream>
-#include <spanstream>
 #include <ranges>
 #include <iterator>
-#include <iomanip>
 
-#include <sys/socket.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <blobify/blobify.hpp>
-#include <blobify/memory_storage.hpp>
-
 
 #include "context.hpp"
 #include "dns.hpp"
-
-constexpr auto properties(blob::tag<DNSHeader>) {
-    blob::properties_t<DNSHeader> props {};
-
-    props.expected_size = 12; // 16 * 6 / 8
-    std::apply([](auto&... member){((member.endianness = std::endian::big), ...);}, props.members);
-
-    props.member_at<0>().endianness = std::endian::big;
-    props.member_at<1>().endianness = std::endian::big;
-    props.member_at<2>().endianness = std::endian::big;
-    props.member_at<3>().endianness = std::endian::big;
-    props.member_at<4>().endianness = std::endian::big;
-    props.member_at<5>().endianness = std::endian::big;
-
-    return props;
-}
-
-constexpr auto properties(blob::tag<DNSQuestionBlob>) {
-    blob::properties_t<DNSQuestionBlob> props {};
-
-
-    props.member<&DNSQuestionBlob::qclass>().endianness    = std::endian::big;
-    props.member<&DNSQuestionBlob::qclass>().validate_enum = true;
-
-    props.member<&DNSQuestionBlob::qtype>().endianness     = std::endian::big;
-    props.member<&DNSQuestionBlob::qtype>().validate_enum  = true;
-
-    return props;
-}
-
-constexpr auto properties(blob::tag<DNSResourceRecordBlob>) {
-    blob::properties_t<DNSResourceRecordBlob> props {};
-
-    props.member<&DNSResourceRecordBlob::type>().endianness           = std::endian::big;
-    props.member<&DNSResourceRecordBlob::type>().validate_enum        = true;
-    props.member<&DNSResourceRecordBlob::query_class>().endianness    = std::endian::big;
-    props.member<&DNSResourceRecordBlob::query_class>().validate_enum = false; // Could be UDP payload
-    props.member<&DNSResourceRecordBlob::ttl>().endianness            = std::endian::big;
-    props.member<&DNSResourceRecordBlob::rdlength>().endianness       = std::endian::big;
-    return props;
-}
-
-constexpr auto properties(blob::tag<in_addr>) {
-    blob::properties_t<in_addr> props {};
-
-    props.member<&in_addr::s_addr>().endianness = std::endian::big;
-    return props;
-}
-
-constexpr auto properties(blob::tag<DNSOptionBlob>) {
-    blob::properties_t<DNSOptionBlob> props {};
-    props.expected_size = 4;
-    props.member<&DNSOptionBlob::option_code>().endianness    = std::endian::big;
-    props.member<&DNSOptionBlob::option_code>().validate_enum = true;
-    props.member<&DNSOptionBlob::data_size>().endianness      = std::endian::big;
-    return props;
-}
 
 EDNS_ResourceRecord::EDNS_ResourceRecord(const DNSResourceRecordBlob& rr) :
     type(rr.type),
@@ -137,11 +75,12 @@ dns_exception_handler(fip::context& ctx,
 }
 
 
-// Function to transform a regular host name to its DNS-encoded form
-std::expected<void, std::error_code>
-host_to_dnshost(fip::context& ctx, std::string_view host, std::ostream& os) noexcept {
-    using namespace std::literals;
-    try {
+namespace {
+    // Function to transform a regular host name to its DNS-encoded form
+    std::expected<void, std::error_code>
+    host_to_dnshost(fip::context& ctx, std::string_view host, std::ostream& os) {
+        using namespace std::literals;
+
         for (const auto &subrange : std::views::split(host, "."sv)) {
             os.put(static_cast<uint8_t>(std::ranges::size(subrange)));
             std::ranges::copy(subrange, std::ostreambuf_iterator(os));
@@ -152,12 +91,8 @@ host_to_dnshost(fip::context& ctx, std::string_view host, std::ostream& os) noex
             return {};
         }
         return std::unexpected(make_error_code(DNSError::HostToDNSHostStreamFailure));
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::HostToDNSHostStreamUnexpectedException));
     }
-}
 
-namespace {
     std::error_code handle_eof(std::istream &is) {
         is.peek();
         if (is.eof()) {
@@ -165,23 +100,26 @@ namespace {
         } else {
             return make_error_code(DNSError::DNSHostToHostStreamFailure);
         }
-    };
-}
+    }
 
-std::expected<std::string, std::error_code>
-dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) noexcept {
-    std::ostringstream hostname;
-    auto os_iter = std::ostreambuf_iterator(hostname);
-    auto view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
-    const uint16_t start_pos = is.tellg();
-    ctx.log.debug("Recorded start_pos {}", start_pos);
-    try {
+    consteval std::streamoff
+    operator""_soff(unsigned long long x)
+    {
+        return static_cast<std::streamoff>(x);
+    }
+
+    std::expected<std::string, std::error_code>
+    dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) {
+        std::ostringstream hostname;
+        auto os_iter = std::ostreambuf_iterator(hostname);
+        auto view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
+        const uint16_t start_pos = is.tellg();
+
         do {
             uint8_t label_size = 0;
             if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &label_size);
                 copy_result.out == &label_size)
             {
-                ctx.log.debug("No label after '{}'", hostname.view());
                 return std::unexpected(handle_eof(is));
             }
 
@@ -189,45 +127,38 @@ dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) n
             if (0 == label_size) {
                 auto res = hostname.str();
                 if (0 < res.size()) res.pop_back(); // Remove trailing .
-                auto [it, _] = jump_table.emplace(start_pos, res);
-                ctx.log.debug("Jump Table Insert: {}={}", it->first, it->second);
-                return res;
+                auto [it, _] = jump_table.emplace(start_pos, std::move(res));
+                return it->second;
             }
+
             const bool is_compressed = (label_size & 0xC0) == 0xC0;
             if (is_compressed) {
                 uint8_t next;
                 if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &next);
                     copy_result.out == &next) {
-                    ctx.log.debug("No compressed offset after '{}'", hostname.view());
                     return std::unexpected(handle_eof(is));
                 }
 
                 auto jump = static_cast<uint16_t>((label_size & 0x3F) << 8) | next;
-                ctx.log.debug("Read compressed jump {}", jump);
                 auto it = jump_table.find(jump);
                 if (it != jump_table.end()) {
-                    ctx.log.debug("Jump table answer: {}", it->second);
                     return it->second;
                 }
             }
 
             if (64 < label_size) {
-                ctx.log.debug("Got excessive label size {} after '{}'", label_size, hostname.view());
                 return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostLabelSize));
             }
 
             std::ranges::copy(std::views::take(view, label_size), os_iter);
             if (view.empty()) {
-                ctx.log.debug("View is empty after '{}'", hostname.view());
                 return std::unexpected(handle_eof(is));
             }
             *os_iter = '.';
 
-        } while (hostname.tellp() < std::streamoff(257));
+        } while (hostname.tellp() < 257_soff);
         ctx.log.debug("Excessive hostname size {} > 256: '{}'", static_cast<std::streamoff>(hostname.tellp()), hostname.view());
         return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::DNSHostToHostStreamUnexpectedException));
     }
 }
 
@@ -243,80 +174,6 @@ std::error_code make_error_code(DNSError e)
     return {magic_enum::enum_integer(e), DNSError_category()};
 }
 
-struct fetchip_construction_policy : blob::construction_policy {
-    template<typename T, typename Representative, std::endian SourceEndianness>
-    static T decode(Representative source) {
-        if constexpr (std::is_enum_v<T>) {
-            if constexpr (SourceEndianness != std::endian::native) {
-                return static_cast<T>(std::byteswap(source));
-            } else {
-                return static_cast<T>(source);
-            }
-        } else {
-            if constexpr (SourceEndianness != std::endian::native) {
-                return T { std::byteswap(source) };
-            } else {
-                return T { source };
-            }
-        }
-    }
-
-    template<typename Representative, typename T, std::endian TargetEndianness>
-    static Representative encode(const T& value) {
-        if constexpr (std::is_enum_v<T>) {
-            if constexpr (TargetEndianness != std::endian::native) {
-                return std::byteswap(std::to_underlying(value));
-            } else {
-                return std::to_underlying(value);
-            }
-        } else {
-            if constexpr (TargetEndianness != std::endian::native) {
-                return std::byteswap(Representative { value });
-            } else {
-                return Representative { value };
-            }
-        }
-    }
-};
-
-struct BlobLoader {
-    BlobLoader(std::istream &is) : is(is) {}
-    std::istream &is;
-
-    void seek(std::ptrdiff_t num_bytes) {
-        is.seekg(num_bytes, std::ios::cur);
-        if (is.bad()) {
-            throw std::system_error(make_error_code(DNSError::DeserializeStreamFailure), "seekg()");
-        }
-    }
-
-    void load(std::byte* source, std::size_t num_bytes) {
-        is.read(reinterpret_cast<char*>(source), num_bytes);
-        if (is.fail()) {
-            throw std::system_error(make_error_code(DNSError::DeserializeStreamFailure), "read()");
-        }
-    }
-};
-
-struct BlobStorer {
-    BlobStorer(std::ostream &os) : os(os) { }
-    std::ostream &os;
-
-    void seek(std::ptrdiff_t num_bytes) {
-        os.seekp(num_bytes, std::ios::cur);
-        if (os.bad()) {
-            throw std::system_error(make_error_code(DNSError::SerializeStreamFailure), "seek()");
-        }
-    }
-
-    void store(std::byte* source, std::size_t num_bytes) {
-        os.write(reinterpret_cast<char*>(source), num_bytes);
-        if (os.fail()) {
-            throw std::system_error(make_error_code(DNSError::SerializeStreamFailure), "write()");
-        }
-    }
-};
-
 DNSMessage::DNSMessage(fip::context& ctx) noexcept :
     header(),
     ctx(ctx)
@@ -324,24 +181,6 @@ DNSMessage::DNSMessage(fip::context& ctx) noexcept :
     std::uniform_int_distribution<decltype(header.id)> id_dist{ 0, std::numeric_limits<decltype(header.id)>::max() };
     header.id = id_dist(ctx.rng);
     header.flags = static_cast<DNSHeaderFlags>(RecursionDesired);
-
-    /*
-    RData_OPT opt {};
-    opt.blob.payload_size = DNSBufferSize;
-    opt.blob.version = 0;
-    opt.blob.type = DNSQueryType::OPT;
-    DNSOption cookie;
-    cookie.blob.data_size = 8;
-    cookie.blob.option_code = EDNSOptionCode::COOKIE;
-
-    auto cookie_dist = std::uniform_int_distribution<uint8_t>{};
-    std::generate_n(std::back_inserter(cookie.data), 8, [&]() -> uint8_t { return cookie_dist(ctx.rng); });
-    opt.add_option(std::move(cookie));
-    */
-    // MEOW MEOW MEOW
-    // make a DNSResourceRecord::set_edns(EDNS_OPT_Record) or something
-
-//    additionals.push_back(std::move(opt));
 }
 
 std::expected<void, std::error_code>

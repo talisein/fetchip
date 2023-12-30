@@ -1,5 +1,4 @@
 #pragma once
-#include <format>
 #include <variant>
 #include <vector>
 #include <expected>
@@ -108,25 +107,6 @@ enum class DNSExtResponseCodes : uint16_t {
     RESERVED = 65535
 };
 
-template <>
-struct std::formatter<DNSHeaderFlags> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(DNSHeaderFlags p, FormatContext& ctx) const {
-        const DNSHeaderFlags masked_flags = static_cast<DNSHeaderFlags>(p & static_cast<DNSHeaderFlags>(~(OpCodeMask | ResponseCodeMask | QueryResponse)));
-        const auto op_code = static_cast<DNSOpCodes>((p & OpCodeMask) >> 11);
-        const auto response_code = static_cast<DNSResponseCodes>(p & ResponseCodeMask);
-        return format_to(ctx.out(), "DNSHeaderFlags {{ QR: {}, Flags: {}, OpCode: {}, ResponseCode: {} }}",
-                         (QueryResponse & p) ? "Response"sv : "Query"sv,
-                         magic_enum::enum_flags_name(masked_flags),
-                         magic_enum::enum_name(op_code),
-                         magic_enum::enum_name(response_code));
-    }
-};
-
-
 enum class DNSQueryType : uint16_t {
     A = 1,           // IPv4 address
     NS = 2,          // Name Server
@@ -171,19 +151,6 @@ struct DNSHeader {
     }
 };
 
-template <>
-struct std::formatter<DNSHeader> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(const DNSHeader& p, FormatContext& ctx) const {
-        return format_to(ctx.out(), "DNSHeader {{ ID: 0x{:X}, {}, Questions: {}, Answers: {}, Authorities: {}, Additionals: {} }}"sv,
-                         p.id, p.flags, p.qdcount, p.ancount, p.nscount, p.arcount);
-    }
-};
-
-
 struct DNSQuestionBlob {
     DNSQueryType qtype;     // Type of the query
     DNSQueryClass qclass;   // Class of the query
@@ -197,18 +164,6 @@ struct DNSQuestion {
     static std::expected<DNSQuestion, std::error_code> deserialize(fip::context& ctx, std::istream &is, jump_table_t& jump_table) noexcept;
 };
 
-template <>
-struct std::formatter<DNSQuestion> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(const DNSQuestion& p, FormatContext& ctx) const {
-        return format_to(ctx.out(), "DNSQuestion {{ Name: {}, Type: {}, Class: {} }}"sv,
-                         p.qname, magic_enum::enum_name(p.blob.qtype), magic_enum::enum_name(p.blob.qclass));
-    }
-};
-
 // Struct for RDATA in DNSAnswer for A (IPv4 address) records
 struct RData_A {
     in_addr ipv4_address;  // IPv4 address
@@ -217,40 +172,6 @@ struct RData_A {
 // Struct for RDATA in DNSAnswer for AAAA (IPv6 address) records
 struct RData_AAAA {
     in6_addr ipv6_address;  // IPv6 address
-};
-
-template <>
-struct std::formatter<RData_A> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(RData_A p, FormatContext& ctx) const {
-        std::array<char, INET_ADDRSTRLEN + 1> buf;
-        auto res = inet_ntop(AF_INET, &p.ipv4_address, buf.data(), buf.size());
-        if (res) {
-            return format_to(ctx.out(), "RData_A {{ ipv4_address: {} }}"sv, buf.begin());
-        } else {
-            return format_to(ctx.out(), "RData_A {{ ipv4_address: (Error: {}) }}"sv, strerror(errno));
-        }
-    }
-};
-
-template <>
-struct std::formatter<RData_AAAA> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(const RData_AAAA& p, FormatContext& ctx) const {
-        std::array<char, INET6_ADDRSTRLEN + 1> buf;
-        auto res = inet_ntop(AF_INET6, &p.ipv6_address, buf.data(), buf.size());
-        if (res) {
-            return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: {} }}"sv, buf.begin());
-        } else {
-            return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: (Error: {}) }}"sv, strerror(errno));
-        }
-    }
 };
 
 // Struct for RDATA in DNSAnswer for NS (Name Server) records
@@ -332,27 +253,6 @@ struct RData_OPT {
     static std::expected<RData_OPT, std::error_code> deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexcept;
 };
 
-template <>
-struct std::formatter<RData_OPT> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(const RData_OPT& p, FormatContext& ctx) const {
-        auto out_iter = ctx.out();
-        for (auto option : p.options) {
-            out_iter = format_to(out_iter, ", EDNS0_Option {{ OptionCode: {}, OptionDataSize: {}, Data: {{ 0x",
-                                 magic_enum::enum_name(option.blob.option_code), option.blob.data_size);
-            for (auto c : option.data) {
-                out_iter = format_to(out_iter, "{:X}", c);
-            }
-            out_iter = format_to(out_iter, " }} }}"); // option.data
-        }
-        return out_iter;
-    }
-};
-
-
 struct DNSResourceRecordBlob {
     DNSQueryType type;   // Type of the query response
     DNSQueryClass query_class; // Class of the query response
@@ -382,47 +282,6 @@ struct DNSResourceRecord {
 
     std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const noexcept;
     static std::expected<DNSResourceRecord, std::error_code> deserialize(fip::context& ctx, std::istream &is, jump_table_t& jump_table) noexcept;
-};
-
-template <>
-struct std::formatter<DNSResourceRecord> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(const DNSResourceRecord& rr, FormatContext& ctx) const
-    {
-        if (rr.blob.type != DNSQueryType::OPT) {
-            auto out_iter = format_to(ctx.out(),
-                                      "DNSResourceRecord {{ Name: {}, Type: {}, Class: {}, TTL: {}, RDataLength: {}, "sv,
-                                      rr.name,
-                                      magic_enum::enum_name(rr.blob.type),
-                                      magic_enum::enum_name(rr.blob.query_class),
-                                      rr.blob.ttl,
-                                      rr.blob.rdlength);
-            switch (rr.blob.type) {
-                case DNSQueryType::A:
-                    return format_to(out_iter, "{} }}", std::get<RData_A>(rr.rdata));
-                case DNSQueryType::AAAA:
-                    return format_to(out_iter, "{} }}", std::get<RData_AAAA>(rr.rdata));
-                case DNSQueryType::TXT:
-                    return format_to(out_iter, "RData_TXT: {} }}", std::get<RData_TXT>(rr.rdata).text);
-                default:
-                    return format_to(out_iter, "(unimplemented rdata formatter) }}");
-            }
-        } else {
-            EDNS_ResourceRecord edns {rr.blob};
-
-            auto out_iter = format_to(ctx.out(), "EDNS_ResourceRecord {{ Type: {}, UDP_PayloadSize: {}, ExtendedRCode: {}, Version: {}, Flags: {}, RDataLength: {}"sv,
-                                      magic_enum::enum_name(edns.type),
-                                      edns.payload_size,
-                                      edns.extendedRCode,
-                                      edns.version,
-                                      magic_enum::enum_flags_name(edns.flags),
-                                      edns.rdlength);
-            return format_to(out_iter, "{} }}", std::get<RData_OPT>(rr.rdata));
-        }
-    }
 };
 
 enum class DNSError
@@ -480,10 +339,6 @@ namespace detail
 const detail::DNSError_category& DNSError_category();
 std::error_code make_error_code(DNSError e);
 
-[[nodiscard]] std::expected<void, std::error_code> host_to_dnshost(fip::context& ctx, std::string_view hostname, std::ostream& os) noexcept;
-[[nodiscard]] std::expected<std::string, std::error_code> dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) noexcept;
-
-
 class DNSMessage
 {
     DNSHeader header;
@@ -516,28 +371,5 @@ public:
     [[nodiscard]] std::span<const DNSResourceRecord> get_additionals() const noexcept { return additionals; };
 };
 
-template <>
-struct std::formatter<DNSMessage> {
-    constexpr auto parse(format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    template <typename FormatContext>
-    auto format(const DNSMessage& p, FormatContext& ctx) const {
-        auto out_iter = format_to(ctx.out(), "DNSMessage {{ {}, ", p.get_header());
-
-        auto writer = [&out_iter, is_first = true](const auto& rr) mutable {
-            if (is_first) {
-                out_iter = format_to(out_iter, "{}", rr);
-                is_first = false;
-            } else {
-                out_iter = format_to(out_iter, ", {}", rr);
-            }
-        };
-        std::ranges::for_each(p.get_questions(), std::ref(writer));
-        std::ranges::for_each(p.get_answers(), std::ref(writer));
-        std::ranges::for_each(p.get_authorities(), std::ref(writer));
-        std::ranges::for_each(p.get_additionals(), std::ref(writer));
-
-        return format_to(out_iter, " }}");
-    }
-};
+#include "dns_formatters.hpp"
+#include "dns_blobify.hpp"
