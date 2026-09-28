@@ -3,6 +3,7 @@ fetchip_files = [
 ]
 
 lib_srcs = [
+  'consensus.cpp',
   'dns.cpp',
   'dns_resolver.cpp',
   'fetch_error.cpp',

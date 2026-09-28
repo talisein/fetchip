@@ -3,7 +3,7 @@
 #include <netdb.h>
 #include <array>
 #include <format>
-#include <random>
+#include <vector>
 #include <optional>
 #include <ranges>
 #include <algorithm>
@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 
 #include <magic_enum/magic_enum.hpp>
+#include "consensus.hpp"
 #include "context.hpp"
 #include "dns.hpp"
 #include "dns_resolver.hpp"
@@ -63,7 +64,7 @@ static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.t
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.query_type.has_value(); else return true; }) );
 
 asio::awaitable<std::expected<std::string, std::error_code>>
-query_http_public_ip(fip::context& ctx, const Service& service)
+query_http_public_ip(fip::context& ctx, Service service)
 {
     auto res = co_await http_get(ctx, service.address, *service.path);
     if (!res) {
@@ -86,7 +87,7 @@ query_http_public_ip(fip::context& ctx, const Service& service)
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
-query_public_ip(fip::context &ctx, const Service& service)
+query_public_ip(fip::context &ctx, Service service)
 {
     if (service.type == ServiceType::HTTP || service.type == ServiceType::HTTPS) {
         co_return co_await query_http_public_ip(ctx, service);
@@ -159,15 +160,11 @@ int main(int argc, char* argv[]) {
         }) | std::views::filter([family](const auto& service) {
             return !service.query_type || provider_supports(*service.query_type, family);
         });
-        const size_t num_filteredServices = std::ranges::distance(filteredServices);
-        if (num_filteredServices == 0) {
+        auto candidates = std::ranges::to<std::vector<Service>>(filteredServices);
+        if (candidates.empty()) {
             std::cerr << "No service matches the selected options\n";
             return EXIT_FAILURE;
         }
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<size_t> dist(0, num_filteredServices - 1);
-        const auto selectedService = *std::views::drop(filteredServices, dist(gen)).begin();
 
         fip::context ctx;
         ctx.requested_family = family;
@@ -175,15 +172,44 @@ int main(int argc, char* argv[]) {
             ctx.log.set_verbose(true);
         }
 
-        std::expected<std::string, std::error_code> publicIp = std::unexpected(std::error_code {});
-        asio::co_spawn(ctx.io_context, query_public_ip(ctx, selectedService),
-                       [&publicIp](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
-                           if (e) std::rethrow_exception(e);
-                           publicIp = std::move(result);
-                       });
+        // Services are drawn from the back, so each is asked at most once.
+        std::ranges::shuffle(candidates, ctx.rng);
+        IPConsensus consensus;
+        std::size_t in_flight = 0;
+        std::optional<std::string> publicIp;
+
+        auto top_up = [&](this auto& self) -> void {
+            const auto needed = consensus.needed();
+            if (in_flight + candidates.size() < needed) {
+                ctx.log.error("No consensus from {} answers and {} services left", consensus.answers(), candidates.size());
+                ctx.io_context.stop();
+                return;
+            }
+            for (; in_flight < needed; ++in_flight) {
+                const auto service = candidates.back();
+                candidates.pop_back();
+                asio::co_spawn(ctx.io_context, query_public_ip(ctx, service),
+                               [&, service](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
+                                   if (e) std::rethrow_exception(e);
+                                   --in_flight;
+                                   if (result && !consensus.record(*result)) {
+                                       ctx.log.debug("{} did not answer with an address: {}", service.address, *result);
+                                   }
+                                   if (auto winner = consensus.winner()) {
+                                       ctx.log.notice("{} of {} answers agreed on {}", consensus.votes_for(*winner), consensus.answers(), *winner);
+                                       publicIp = std::move(winner);
+                                       // Abandon the stragglers rather than wait out their timeouts.
+                                       ctx.io_context.stop();
+                                       return;
+                                   }
+                                   self();
+                               });
+            }
+        };
+        top_up();
         ctx.io_context.run();
         if (publicIp) {
-            std::cout << publicIp.value() << std::endl;
+            std::cout << *publicIp << std::endl;
         } else {
             return EXIT_FAILURE;
         }
