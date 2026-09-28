@@ -67,6 +67,32 @@ namespace {
         }
         co_return std::move(res.body());
     }
+
+    // The range connect only returns the last endpoint's error, so each failure is logged as it happens.
+    asio::awaitable<std::expected<void, std::error_code>>
+    connect(fip::context& ctx, beast::tcp_stream& stream, std::string_view host, const tcp::resolver::results_type& endpoints)
+    {
+        std::optional<tcp::endpoint> attempted;
+        // Called before every attempt with the previous attempt's result; before the first, ec is always success.
+        auto connect_condition_log_previous_endpoint_failure = [&](const boost::system::error_code& ec, const tcp::endpoint& next) {
+            if (ec && attempted) {
+                ctx.log.debug("Failed to connect to {} at {}: {}", host, attempted->address().to_string(), ec.message());
+            }
+            attempted = next;
+            return true;
+        };
+
+        auto [ec, ep] = co_await stream.async_connect(endpoints, connect_condition_log_previous_endpoint_failure, token);
+        if (ec) {
+            // No condition call follows the last attempt.
+            if (attempted) {
+                ctx.log.debug("Failed to connect to {} at {}: {}", host, attempted->address().to_string(), ec.message());
+            }
+            co_return std::unexpected(ec);
+        }
+        ctx.log.debug("Connected to {}", ep.address().to_string());
+        co_return std::expected<void, std::error_code> {};
+    }
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
@@ -93,12 +119,10 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
 
     if (!secure) {
         beast::tcp_stream stream {ctx.io_context};
-        auto [ec, ep] = co_await stream.async_connect(*endpoints, token);
-        if (ec) {
-            ctx.log.debug("Failed to connect to {}: {}", host, ec.message());
-            co_return std::unexpected(ec);
+        auto connected = co_await connect(ctx, stream, host, *endpoints);
+        if (!connected) {
+            co_return std::unexpected(connected.error());
         }
-        ctx.log.debug("Connected to {}", ep.address().to_string());
         co_return co_await exchange(ctx, stream, host, path);
     }
 
@@ -112,12 +136,10 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
     }
     stream.set_verify_callback(asio::ssl::host_name_verification(host_name));
 
-    auto [connect_ec, ep] = co_await beast::get_lowest_layer(stream).async_connect(*endpoints, token);
-    if (connect_ec) {
-        ctx.log.debug("Failed to connect to {}: {}", host, connect_ec.message());
-        co_return std::unexpected(connect_ec);
+    auto connected = co_await connect(ctx, beast::get_lowest_layer(stream), host, *endpoints);
+    if (!connected) {
+        co_return std::unexpected(connected.error());
     }
-    ctx.log.debug("Connected to {}", ep.address().to_string());
 
     auto [handshake_ec] = co_await stream.async_handshake(asio::ssl::stream_base::client, token);
     if (handshake_ec) {
