@@ -18,13 +18,15 @@ namespace fip
         context(pcg32::state_type seed, bool is_testing = false) :
             rng(seed),
             is_testing(is_testing),
-            log(is_testing)
+            log(is_testing),
+            ssl_context(make_ssl_context())
         { }
 
         context(bool is_testing = false) :
             rng(pcg_extras::seed_seq_from<std::random_device>()),
             is_testing(is_testing),
-            log(is_testing)
+            log(is_testing),
+            ssl_context(make_ssl_context())
         { }
 
         pcg32 rng;
@@ -34,5 +36,15 @@ namespace fip
         AddressFamily requested_family = AddressFamily::Any;
 
         asio::io_context io_context;
+        asio::ssl::context ssl_context;
+
+    private:
+        static asio::ssl::context make_ssl_context()
+        {
+            asio::ssl::context c {asio::ssl::context::tls_client};
+            c.set_default_verify_paths();
+            c.set_verify_mode(asio::ssl::verify_peer);
+            return c;
+        }
     };
 }

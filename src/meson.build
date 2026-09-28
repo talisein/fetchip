@@ -6,6 +6,8 @@ lib_srcs = [
   'dns.cpp',
   'dns_resolver.cpp',
   'fetch_error.cpp',
+  'http_client.cpp',
+  'http_error.cpp',
 ]
 
 lib = static_library('fetchip', lib_srcs,

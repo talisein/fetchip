@@ -1,7 +1,6 @@
 #include <iostream>
 #include <cstring>
 #include <netdb.h>
-#include <httplib.h>
 #include <array>
 #include <format>
 #include <random>
@@ -18,6 +17,7 @@
 #include "dns.hpp"
 #include "dns_resolver.hpp"
 #include "fetch_error.hpp"
+#include "http_client.hpp"
 
 using namespace std::literals;
 enum class ServiceType {
@@ -62,49 +62,34 @@ static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.t
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.resolver.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.query_type.has_value(); else return true; }) );
 
-std::expected<std::string, std::error_code>
+asio::awaitable<std::expected<std::string, std::error_code>>
 query_http_public_ip(fip::context& ctx, const Service& service)
 {
-    httplib::Client client(std::string(service.address));
-    switch (ctx.requested_family) {
-    case fip::AddressFamily::V4:
-        client.set_address_family(AF_INET);
-        break;
-    case fip::AddressFamily::V6:
-        client.set_address_family(AF_INET6);
-        break;
-    case fip::AddressFamily::Any:
-        break;
+    auto res = co_await http_get(ctx, service.address, *service.path);
+    if (!res) {
+        ctx.log.debug("Failed to fetch ip from {}: {}", service.address, res.error().message());
+        co_return std::unexpected(res.error());
     }
-    auto res = client.Get(std::string(*service.path));
-    if (res && res->status == 200) {
-        auto body = std::string_view(res->body);
-        body = body.substr(0, body.find_last_not_of(" \t\r\n") + 1);
-        auto family = address_family_of(body);
-        if (!family) {
-            ctx.log.debug("Response from {} is not an IP address: {}", service.address, body);
-            return std::unexpected(std::make_error_code(std::errc::bad_message));
-        }
-        if (ctx.requested_family != fip::AddressFamily::Any && *family != ctx.requested_family) {
-            ctx.log.debug("Response from {} is {}, wanted {}", service.address, magic_enum::enum_name(*family), magic_enum::enum_name(ctx.requested_family));
-            return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
-        }
-        ctx.log.notice("Fetched current ip {} from {}", body, service.address);
-        return std::string(body);
-    } else if (res) {
-        ctx.log.debug("Failed to fetch ip from {}: HTTP {}", service.address, res->status);
-        return std::unexpected(std::make_error_code(std::errc::io_error));
-    } else {
-        ctx.log.debug("Failed to fetch ip from {}: {}", service.address, httplib::to_string(res.error()));
-        return std::unexpected(std::make_error_code(std::errc::io_error));
+    auto body = std::string_view(*res);
+    body = body.substr(0, body.find_last_not_of(" \t\r\n") + 1);
+    auto family = address_family_of(body);
+    if (!family) {
+        ctx.log.debug("Response from {} is not an IP address: {}", service.address, body);
+        co_return std::unexpected(std::make_error_code(std::errc::bad_message));
     }
+    if (ctx.requested_family != fip::AddressFamily::Any && *family != ctx.requested_family) {
+        ctx.log.debug("Response from {} is {}, wanted {}", service.address, magic_enum::enum_name(*family), magic_enum::enum_name(ctx.requested_family));
+        co_return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
+    }
+    ctx.log.notice("Fetched current ip {} from {}", body, service.address);
+    co_return std::string(body);
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
 query_public_ip(fip::context &ctx, const Service& service)
 {
     if (service.type == ServiceType::HTTP || service.type == ServiceType::HTTPS) {
-        co_return query_http_public_ip(ctx, service);
+        co_return co_await query_http_public_ip(ctx, service);
     } else if (service.type == ServiceType::DNS) {
         DNSResolver resolver {ctx};
         co_return co_await resolver.query_dns_public_ip(service.address, *service.resolver, *service.query_type);

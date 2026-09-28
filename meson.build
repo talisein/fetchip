@@ -1,7 +1,5 @@
 project('fetchip', 'cpp', default_options : ['cpp_std=c++26'])
 
-cpphttplib_dep = dependency('cpp-httplib',
-                            fallback : ['cpp-httplib'])
 cxxopts_dep = dependency('cxxopts',
                          fallback: ['cxxopts'])
 
@@ -20,7 +18,7 @@ ut_dep = dependency('ut',
 
 add_project_arguments('-DBOOST_UT_DISABLE_MODULE', language: 'cpp')
 
-deps = [cpphttplib_dep, cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, blobify_dep, pcg_dep]
+deps = [cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, blobify_dep, pcg_dep]
 
 subdir('src')
 subdir('tests')
