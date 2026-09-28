@@ -9,6 +9,7 @@
 #include <magic_enum/magic_enum_flags.hpp>
 #include <magic_enum/magic_enum_iostream.hpp>
 #include "dns.hpp"
+#include "dns_resolver.hpp"
 
 template<size_t fail_count>
 class throws_after_failcount_streambuf : public std::basic_streambuf<char> {
@@ -557,5 +558,45 @@ int main() {
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\4HnPY"sv,
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\0210123456789abcdefg"sv,
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\20HnPY"sv,
+    };
+
+    "address family of text"_test = [] {
+        const auto cases = std::to_array<std::pair<std::string_view, std::optional<fip::AddressFamily>>>({
+            {"198.51.100.39"sv, fip::AddressFamily::V4},
+            {"2001:db8::39"sv, fip::AddressFamily::V6},
+            {"::ffff:198.51.100.39"sv, fip::AddressFamily::V6},
+            {"Query A or AAAA for your source address as seen by the resolver"sv, std::nullopt},
+            {"\"198.51.100.39\""sv, std::nullopt},
+            {"198.51.100.39\n"sv, std::nullopt},
+            {""sv, std::nullopt},
+        });
+        for (const auto& [text, family] : cases) {
+            expect(address_family_of(text) == family) << text;
+        }
+    };
+
+    "query type for transport"_test = [] {
+        using enum DNSProviderAcceptedQueryType;
+        using fip::AddressFamily;
+        expect(query_type_for(A_OR_AAAA, AddressFamily::V4) == DNSQueryType::A);
+        expect(query_type_for(A_OR_AAAA, AddressFamily::V6) == DNSQueryType::AAAA);
+        expect(query_type_for(A_ONLY, AddressFamily::V4) == DNSQueryType::A);
+        expect(query_type_for(A_ONLY, AddressFamily::V6) == std::nullopt);
+        expect(query_type_for(AAAA_ONLY, AddressFamily::V4) == std::nullopt);
+        expect(query_type_for(AAAA_ONLY, AddressFamily::V6) == DNSQueryType::AAAA);
+        expect(query_type_for(TXT, AddressFamily::V4) == DNSQueryType::TXT);
+        expect(query_type_for(TXT, AddressFamily::V6) == DNSQueryType::TXT);
+        expect(query_type_for(TXT, AddressFamily::Any) == std::nullopt);
+    };
+
+    "provider supports family"_test = [] {
+        using enum DNSProviderAcceptedQueryType;
+        using fip::AddressFamily;
+        expect(provider_supports(A_ONLY, AddressFamily::Any));
+        expect(provider_supports(A_ONLY, AddressFamily::V4));
+        expect(!provider_supports(A_ONLY, AddressFamily::V6));
+        expect(!provider_supports(AAAA_ONLY, AddressFamily::V4));
+        expect(provider_supports(A_OR_AAAA, AddressFamily::V6));
+        expect(provider_supports(TXT, AddressFamily::V6));
     };
 }

@@ -7,6 +7,11 @@
 
 namespace fip
 {
+    enum class AddressFamily {
+        Any,
+        V4,
+        V6
+    };
 
     struct context {
     public:
@@ -26,10 +31,7 @@ namespace fip
         bool is_testing;
         logger log;
 
-        enum class RequestedFamily {
-            IP4,
-            IP6
-        } requested_family;
+        AddressFamily requested_family = AddressFamily::Any;
 
         asio::io_context io_context;
     };

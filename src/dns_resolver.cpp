@@ -2,8 +2,59 @@
 #include <ranges>
 #include <span>
 #include <spanstream>
+#include <arpa/inet.h>
 #include "dns_resolver.hpp"
 #include "dns.hpp"
+
+std::optional<fip::AddressFamily> address_family_of(std::string_view text)
+{
+    std::array<char, INET6_ADDRSTRLEN> buf {};
+    if (text.size() >= buf.size()) {
+        return std::nullopt;
+    }
+    std::ranges::copy(text, buf.data());
+
+    in6_addr scratch;
+    if (inet_pton(AF_INET, buf.data(), &scratch) == 1) {
+        return fip::AddressFamily::V4;
+    }
+    if (inet_pton(AF_INET6, buf.data(), &scratch) == 1) {
+        return fip::AddressFamily::V6;
+    }
+    return std::nullopt;
+}
+
+bool provider_supports(DNSProviderAcceptedQueryType provider, fip::AddressFamily family)
+{
+    switch (provider) {
+    case DNSProviderAcceptedQueryType::A_ONLY:
+        return family != fip::AddressFamily::V6;
+    case DNSProviderAcceptedQueryType::AAAA_ONLY:
+        return family != fip::AddressFamily::V4;
+    case DNSProviderAcceptedQueryType::A_OR_AAAA:
+    case DNSProviderAcceptedQueryType::TXT:
+        return true;
+    }
+    return false;
+}
+
+std::optional<DNSQueryType> query_type_for(DNSProviderAcceptedQueryType provider, fip::AddressFamily transport)
+{
+    if (transport == fip::AddressFamily::Any || !provider_supports(provider, transport)) {
+        return std::nullopt;
+    }
+    if (provider == DNSProviderAcceptedQueryType::TXT) {
+        return DNSQueryType::TXT;
+    }
+    return transport == fip::AddressFamily::V4 ? DNSQueryType::A : DNSQueryType::AAAA;
+}
+
+namespace {
+    fip::AddressFamily family_of(const asio::ip::udp::endpoint& ep)
+    {
+        return ep.address().is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4;
+    }
+}
 
 std::expected<asio::ip::udp::socket, asio::error_code>
 DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
@@ -73,7 +124,7 @@ namespace {
 
 // Function to receive the DNS response and extract the IPv4 address
 std::expected<std::string, std::error_code>
-DNSResolver::receive_dns_response(asio::ip::udp::socket& sock) {
+DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport) {
     asio::error_code ec;
     asio::socket_base::message_flags flags { };
     std::array<char, DNSBufferSize> buf;
@@ -117,18 +168,37 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock) {
     // TODO: refactor to propagate error types and not use char*
     std::array<char, INET6_ADDRSTRLEN + 1> address {};
     const char *res = nullptr;
+    DNSError failure = DNSError::DNSResolverErrorResponse;
     std::visit(overloads
                {
                    [&](const RData_A& a) {
+                       if (transport != fip::AddressFamily::V4) {
+                           ctx.log.debug("Got an A answer over {}", magic_enum::enum_name(transport));
+                           failure = DNSError::DNSResolverWrongFamily;
+                           return;
+                       }
                        const in_addr network_order { std::endian::native == std::endian::big ? a.ipv4_address.s_addr : std::byteswap(a.ipv4_address.s_addr) };
                        res = inet_ntop(AF_INET, &network_order, address.data(), address.size());
                    },
-                   [&](const RData_AAAA&) {
-                       res = inet_ntop(AF_INET6, std::addressof(std::get<RData_AAAA>(answers[0].rdata).ipv6_address), address.data(), address.size());
+                   [&](const RData_AAAA& aaaa) {
+                       if (transport != fip::AddressFamily::V6) {
+                           ctx.log.debug("Got an AAAA answer over {}", magic_enum::enum_name(transport));
+                           failure = DNSError::DNSResolverWrongFamily;
+                           return;
+                       }
+                       res = inet_ntop(AF_INET6, &aaaa.ipv6_address, address.data(), address.size());
                    },
                    [&](const RData_TXT& txt) {
-                       if (txt.text.size() >= address.size()) {
-                           ctx.log.debug("TXT answer too long for an address: {} bytes", txt.text.size());
+                       auto family = address_family_of(txt.text);
+                       if (!family) {
+                           ctx.log.debug("TXT answer is not an IP address: {}", txt.text);
+                           failure = DNSError::DNSResolverUnexpectedAnswer;
+                           return;
+                       }
+                       ctx.log.debug("TXT answer {} is {}", txt.text, magic_enum::enum_name(*family));
+                       if (*family != transport) {
+                           ctx.log.debug("TXT answer family does not match transport {}", magic_enum::enum_name(transport));
+                           failure = DNSError::DNSResolverWrongFamily;
                            return;
                        }
                        std::ranges::copy(txt.text, address.data());
@@ -140,7 +210,7 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock) {
                }, answers[0].rdata);
     if (nullptr == res) {
         ctx.log.debug("Bailing because we couldn't populate the result string");
-        return std::unexpected(make_error_code(DNSError::DNSResolverErrorResponse));
+        return std::unexpected(make_error_code(failure));
     }
 
     ctx.log.debug("Got response IP: {}", res);
@@ -153,7 +223,18 @@ DNSResolver::get_resolver_address(std::string_view resolver_name)
     using namespace std::literals;
     asio::ip::basic_resolver<asio::ip::udp> resolver {ctx.io_context};
     asio::error_code ec;
-    auto result = resolver.resolve(resolver_name, "domain"sv, ec);
+    asio::ip::basic_resolver<asio::ip::udp>::results_type result;
+    switch (ctx.requested_family) {
+    case fip::AddressFamily::V4:
+        result = resolver.resolve(asio::ip::udp::v4(), resolver_name, "domain"sv, ec);
+        break;
+    case fip::AddressFamily::V6:
+        result = resolver.resolve(asio::ip::udp::v6(), resolver_name, "domain"sv, ec);
+        break;
+    case fip::AddressFamily::Any:
+        result = resolver.resolve(resolver_name, "domain"sv, ec);
+        break;
+    }
     if (ec) {
         ctx.log.debug("Failed to resolve the resolver: {}", ec.message());
         return std::unexpected(ec);
@@ -163,7 +244,7 @@ DNSResolver::get_resolver_address(std::string_view resolver_name)
 }
 
 std::expected<std::string, std::error_code>
-DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query_type) {
+DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSProviderAcceptedQueryType provider) {
     auto resolver_addrs = get_resolver_address(resolver);
     if (!resolver_addrs) {
         return std::unexpected(resolver_addrs.error());
@@ -172,6 +253,14 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
     std::error_code last_error {};
 
     for (const auto& resolver_addr : *resolver_addrs) {
+        const auto transport = family_of(resolver_addr.endpoint());
+        const auto query_type = query_type_for(provider, transport);
+        if (!query_type) {
+            last_error = make_error_code(DNSError::DNSResolverWrongFamily);
+            ctx.log.debug("Skipping {}: {} cannot answer over {}", resolver_addr.endpoint().address().to_string(), magic_enum::enum_name(provider), magic_enum::enum_name(transport));
+            continue;
+        }
+
         auto sock = create_socket_and_connect(resolver_addr);
         if (!sock) {
             last_error = sock.error();
@@ -179,14 +268,14 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
             continue;
         }
 
-        auto sent_query = send_dns_query(*sock, host, query_type);
+        auto sent_query = send_dns_query(*sock, host, *query_type);
         if (!sent_query) {
             last_error = sent_query.error();
             ctx.log.debug("Looping: {}", last_error.message());
             continue;
         }
 
-        auto result = receive_dns_response(*sock);
+        auto result = receive_dns_response(*sock, transport);
         if (result.has_value()) {
             ctx.log.notice("Fetched current ip {} from {}", *result, host);
             return result;

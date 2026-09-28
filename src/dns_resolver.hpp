@@ -10,13 +10,29 @@
 #include "context.hpp"
 #include "dns.hpp"
 
+// What a whoami provider answers. It reports the address the query arrived from, so the transport family decides the answer family.
+enum class DNSProviderAcceptedQueryType {
+    A_OR_AAAA,
+    A_ONLY,
+    AAAA_ONLY,
+    TXT,
+};
+
+// The family of a textual IP address, or nullopt if it is not one.
+std::optional<fip::AddressFamily> address_family_of(std::string_view text);
+
+bool provider_supports(DNSProviderAcceptedQueryType provider, fip::AddressFamily family);
+
+// The wire query to send over a transport, or nullopt if the provider cannot answer over it.
+std::optional<DNSQueryType> query_type_for(DNSProviderAcceptedQueryType provider, fip::AddressFamily transport);
+
 class DNSResolver
 {
 public:
     DNSResolver(fip::context &ctx) : ctx(ctx) { };
 
     std::expected<std::string, std::error_code>
-    query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query_type);
+    query_dns_public_ip(std::string_view host, std::string_view resolver, DNSProviderAcceptedQueryType provider);
 
 private:
     std::expected<asio::ip::basic_resolver<asio::ip::udp>::results_type, asio::error_code>
@@ -29,7 +45,7 @@ private:
     send_dns_query(asio::ip::udp::socket& sock, std::string_view host, DNSQueryType query_type);
 
     std::expected<std::string, std::error_code>
-    receive_dns_response(asio::ip::udp::socket& sock);
+    receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport);
 
     fip::context& ctx;
 

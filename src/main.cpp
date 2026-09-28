@@ -30,7 +30,7 @@ struct Service {
     std::string_view address;
     std::optional<std::string_view> path;
     std::optional<std::string_view> resolver;
-    std::optional<DNSQueryType> query_type;
+    std::optional<DNSProviderAcceptedQueryType> query_type;
     ServiceType type;
 };
 
@@ -75,10 +75,10 @@ constexpr auto services = std::to_array<Service>({
         {"https://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
         {"http://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
         {"https://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"myip.opendns.com", std::nullopt, "resolver1.opendns.com", DNSQueryType::A, ServiceType::DNS},
-        {"whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", DNSQueryType::A, ServiceType::DNS},
-        {"o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", DNSQueryType::TXT, ServiceType::DNS},
-        {"whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", DNSQueryType::A, ServiceType::DNS},
+        {"myip.opendns.com", std::nullopt, "resolver1.opendns.com", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
+        {"whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", DNSProviderAcceptedQueryType::A_ONLY, ServiceType::DNS},
+        {"o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", DNSProviderAcceptedQueryType::TXT, ServiceType::DNS},
+        {"whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
         // Add more services if needed
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
@@ -89,12 +89,36 @@ std::expected<std::string, std::error_code>
 query_http_public_ip(fip::context& ctx, const Service& service)
 {
     httplib::Client client(std::string(service.address));
+    switch (ctx.requested_family) {
+    case fip::AddressFamily::V4:
+        client.set_address_family(AF_INET);
+        break;
+    case fip::AddressFamily::V6:
+        client.set_address_family(AF_INET6);
+        break;
+    case fip::AddressFamily::Any:
+        break;
+    }
     auto res = client.Get(std::string(*service.path));
     if (res && res->status == 200) {
-        ctx.log.notice("Fetched current ip {} from {}", res->body, service.address);
-        return res->body;
+        auto body = std::string_view(res->body);
+        body = body.substr(0, body.find_last_not_of(" \t\r\n") + 1);
+        auto family = address_family_of(body);
+        if (!family) {
+            ctx.log.debug("Response from {} is not an IP address: {}", service.address, body);
+            return std::unexpected(std::make_error_code(std::errc::bad_message));
+        }
+        if (ctx.requested_family != fip::AddressFamily::Any && *family != ctx.requested_family) {
+            ctx.log.debug("Response from {} is {}, wanted {}", service.address, magic_enum::enum_name(*family), magic_enum::enum_name(ctx.requested_family));
+            return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
+        }
+        ctx.log.notice("Fetched current ip {} from {}", body, service.address);
+        return std::string(body);
+    } else if (res) {
+        ctx.log.debug("Failed to fetch ip from {}: HTTP {}", service.address, res->status);
+        return std::unexpected(std::make_error_code(std::errc::io_error));
     } else {
-        ctx.log.debug("Failed to fetch ip from {}: {} ({})", service.address, httplib::to_string(res.error()), res->status);
+        ctx.log.debug("Failed to fetch ip from {}: {}", service.address, httplib::to_string(res.error()));
         return std::unexpected(std::make_error_code(std::errc::io_error));
     }
 }
@@ -124,6 +148,8 @@ int main(int argc, char* argv[]) {
         ("s,service", "Service type (HTTP or DNS)", cxxopts::value<std::string>())
         ("i,insecure", "Use HTTP instead of HTTPS", cxxopts::value<bool>()->default_value("false"))
         ("v,verbose", "Print verbose output to stderr")
+        ("4", "Fetch the public IPv4 address")
+        ("6", "Fetch the public IPv6 address")
         ;
 
     try {
@@ -156,6 +182,14 @@ int main(int argc, char* argv[]) {
             std::cerr << "No selected service type\n";
         }
 
+        if (result.count("4") && result.count("6")) {
+            std::cerr << "-4 and -6 are mutually exclusive\n";
+            return EXIT_FAILURE;
+        }
+        const auto family = result.count("4") ? fip::AddressFamily::V4
+                          : result.count("6") ? fip::AddressFamily::V6
+                          : fip::AddressFamily::Any;
+
         auto use_secure = !result["insecure"].as<bool>();
         auto secureServices = std::views::filter(services, [use_secure](const auto &service) {
             if (use_secure && service.type == ServiceType::HTTP)
@@ -171,10 +205,16 @@ int main(int argc, char* argv[]) {
             } else {
                 return true;
             }
+        }) | std::views::filter([family](const auto& service) {
+            return !service.query_type || provider_supports(*service.query_type, family);
         });
         const size_t num_filteredServices = std::ranges::distance(filteredServices);
 
         std::cerr << "num services = " << num_filteredServices << '\n';
+        if (num_filteredServices == 0) {
+            std::cerr << "No service matches the selected options\n";
+            return EXIT_FAILURE;
+        }
         // Randomly select a service from the filtered range
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -186,6 +226,7 @@ int main(int argc, char* argv[]) {
 
         // Print verbose output to stderr
         fip::context ctx;
+        ctx.requested_family = family;
         if (result.count("verbose")) {
             ctx.log.set_verbose(true);
         }
