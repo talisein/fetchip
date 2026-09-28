@@ -56,12 +56,12 @@ namespace {
     }
 }
 
-std::expected<asio::ip::udp::socket, asio::error_code>
+std::expected<asio::ip::udp::socket, std::error_code>
 DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
 {
     using asio::ip::udp;
 
-    asio::error_code ec;
+    boost::system::error_code ec;
     ctx.log.debug("Connecting to {} port {}", ep.address().to_string(), ep.port());
     if (ep.address().is_v4()) {
         udp::socket s(ctx.io_context, udp::endpoint(udp::v4(), 0));
@@ -83,7 +83,7 @@ DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
     }
 
     ctx.log.debug("Trying to connect to socket to unexpected family {}", ep.address().to_string());
-    return std::unexpected(asio::error::basic_errors::address_family_not_supported);
+    return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
 }
 
 std::expected<void, std::error_code>
@@ -103,7 +103,7 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
     // TODO: safe signed->unsigned cast
     asio::const_buffer b{buf.data(), static_cast<size_t>(ss.tellp())};
     asio::socket_base::message_flags flags { };
-    asio::error_code ec;
+    boost::system::error_code ec;
 
     sock.send(b, flags, ec);
 
@@ -123,14 +123,14 @@ namespace {
 
 std::expected<std::string, std::error_code>
 DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport) {
-    asio::error_code ec;
+    boost::system::error_code ec;
     asio::socket_base::message_flags flags { };
     std::array<char, DNSBufferSize> buf;
     auto bytes_received = sock.receive(asio::buffer(buf), flags, ec);
 
     if (ec || 0 == bytes_received) {
         ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
-        asio::error_code close_ec;
+        boost::system::error_code close_ec;
         sock.close(close_ec);
         if (close_ec) {
             ctx.log.debug("Couldn't even close the socket?! {}", close_ec.message());
@@ -215,12 +215,12 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamil
     return std::string(res);
 }
 
-std::expected<asio::ip::basic_resolver<asio::ip::udp>::results_type, asio::error_code>
+std::expected<asio::ip::basic_resolver<asio::ip::udp>::results_type, std::error_code>
 DNSResolver::get_resolver_address(std::string_view resolver_name)
 {
     using namespace std::literals;
     asio::ip::basic_resolver<asio::ip::udp> resolver {ctx.io_context};
-    asio::error_code ec;
+    boost::system::error_code ec;
     asio::ip::basic_resolver<asio::ip::udp>::results_type result;
     switch (ctx.requested_family) {
     case fip::AddressFamily::V4:

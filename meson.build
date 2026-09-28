@@ -6,7 +6,8 @@ cxxopts_dep = dependency('cxxopts',
                          fallback: ['cxxopts'])
 
 sdjournal_dep = dependency('libsystemd')
-asio_dep = dependency('asio', fallback: ['asio'])
+boost_dep = dependency('boost', modules: ['system'], version: '>=1.84')
+openssl_dep = dependency('openssl', version: '>=3.0.0')
 enum_dep = dependency('magic_enum', fallback: ['magic_enum'])
 pfr_dep = dependency('PFR', fallback: ['PFR'])
 blobify_dep = dependency('blobify', fallback: ['blobify'])
@@ -19,7 +20,7 @@ ut_dep = dependency('ut',
 
 add_project_arguments('-DBOOST_UT_DISABLE_MODULE', language: 'cpp')
 
-deps = [cpphttplib_dep, cxxopts_dep, sdjournal_dep, asio_dep, blobify_dep, pcg_dep]
+deps = [cpphttplib_dep, cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, blobify_dep, pcg_dep]
 
 subdir('src')
 subdir('tests')
