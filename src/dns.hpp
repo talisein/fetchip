@@ -5,8 +5,8 @@
 #include <map>
 #include <sys/socket.h>
 
-#include <magic_enum.hpp>
-#include <magic_enum_flags.hpp>
+#include <magic_enum/magic_enum.hpp>
+#include <magic_enum/magic_enum_flags.hpp>
 #include "context.hpp"
 #include <blobify/blobify.hpp>
 

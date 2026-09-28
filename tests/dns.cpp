@@ -5,9 +5,9 @@
 #include <utility>
 #include <boost/ut.hpp>
 #include <arpa/inet.h>
-#include <magic_enum.hpp>
-#include <magic_enum_flags.hpp>
-#include <magic_enum_iostream.hpp>
+#include <magic_enum/magic_enum.hpp>
+#include <magic_enum/magic_enum_flags.hpp>
+#include <magic_enum/magic_enum_iostream.hpp>
 #include "dns.hpp"
 
 template<size_t fail_count>

@@ -1,4 +1,4 @@
-project('fetchip', 'cpp', default_options : ['cpp_std=c++23'])
+project('fetchip', 'cpp', default_options : ['cpp_std=c++26'])
 
 cpphttplib_dep = dependency('cpp-httplib',
                             fallback : ['cpp-httplib'])
@@ -8,7 +8,7 @@ cxxopts_dep = dependency('cxxopts',
 sdjournal_dep = dependency('libsystemd')
 asio_dep = dependency('asio', fallback: ['asio'])
 enum_dep = dependency('magic_enum', fallback: ['magic_enum'])
-pfr_dep = dependency('PFR', fallback: ['pfr'])
+pfr_dep = dependency('PFR', fallback: ['PFR'])
 blobify_dep = dependency('blobify', fallback: ['blobify'])
 pcg_dep = dependency('pcg', fallback: ['pcg', 'pcg_cpp_dep'])
 

@@ -1,7 +1,7 @@
 [wrap-git]
-directory = pfr-2.2.0
+directory = pfr-boost-1.92.0
 url = https://github.com/boostorg/pfr.git
-revision = 2.2.0
+revision = boost-1.92.0
 depth = 1
 patch_directory = pfr
 

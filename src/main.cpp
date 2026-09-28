@@ -13,7 +13,7 @@
 #include <systemd/sd-journal.h>
 #include <sys/socket.h>
 
-#include <magic_enum.hpp>
+#include <magic_enum/magic_enum.hpp>
 #include "context.hpp"
 #include "dns_resolver.hpp"
 
