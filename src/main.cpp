@@ -3,6 +3,7 @@
 #include <netdb.h>
 #include <array>
 #include <format>
+#include <list>
 #include <vector>
 #include <optional>
 #include <ranges>
@@ -82,7 +83,7 @@ query_http_public_ip(fip::context& ctx, Service service)
         ctx.log.debug("Response from {} is {}, wanted {}", service.address, magic_enum::enum_name(*family), magic_enum::enum_name(ctx.requested_family));
         co_return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
     }
-    ctx.log.notice("Fetched current ip {} from {}", body, service.address);
+    ctx.log.debug("Fetched current ip {} from {}", body, service.address);
     co_return std::string(body);
 }
 
@@ -178,32 +179,55 @@ int main(int argc, char* argv[]) {
         std::size_t in_flight = 0;
         std::optional<std::string> publicIp;
 
+        struct Query {
+            asio::cancellation_signal cancel;
+            bool running = true;
+        };
+        // A list, since a signal cannot move while its query holds the slot.
+        std::list<Query> queries;
+        bool settled = false;
+        // Stragglers can no longer change the outcome. A lookup already inside getaddrinfo still runs to completion.
+        auto settle = [&] {
+            settled = true;
+            for (auto& query : queries) {
+                if (query.running) {
+                    query.cancel.emit(asio::cancellation_type::terminal);
+                }
+            }
+        };
+
         auto top_up = [&](this auto& self) -> void {
             const auto needed = consensus.needed();
             if (in_flight + candidates.size() < needed) {
-                ctx.log.error("No consensus from {} answers and {} services left", consensus.answers(), candidates.size());
-                ctx.io_context.stop();
+                ctx.log.error("No consensus from {} answers, {} in flight and {} services left", consensus.answers(), in_flight, candidates.size());
+                settle();
                 return;
             }
             for (; in_flight < needed; ++in_flight) {
                 const auto service = candidates.back();
                 candidates.pop_back();
+                auto* query = &queries.emplace_back();
                 asio::co_spawn(ctx.io_context, query_public_ip(ctx, service),
-                               [&, service](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
-                                   if (e) std::rethrow_exception(e);
+                               asio::bind_cancellation_slot(query->cancel.slot(),
+                               [&, service, query](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
+                                   query->running = false;
                                    --in_flight;
+                                   // A cancelled query unwinds by throwing operation_aborted from its next co_await.
+                                   if (settled) {
+                                       return;
+                                   }
+                                   if (e) std::rethrow_exception(e);
                                    if (result && !consensus.record(*result)) {
                                        ctx.log.debug("{} did not answer with an address: {}", service.address, *result);
                                    }
                                    if (auto winner = consensus.winner()) {
                                        ctx.log.notice("{} of {} answers agreed on {}", consensus.votes_for(*winner), consensus.answers(), *winner);
                                        publicIp = std::move(winner);
-                                       // Abandon the stragglers rather than wait out their timeouts.
-                                       ctx.io_context.stop();
+                                       settle();
                                        return;
                                    }
                                    self();
-                               });
+                               }));
             }
         };
         top_up();

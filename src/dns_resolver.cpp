@@ -126,7 +126,9 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamil
 
     if (ec || 0 == bytes_received) {
         std::error_code result = ec;
-        if (ec == asio::error::operation_aborted) {
+        // operation_aborted is the timeout only if the caller did not cancel the query.
+        const auto cancelled = (co_await asio::this_coro::cancellation_state).cancelled();
+        if (ec == asio::error::operation_aborted && cancelled == asio::cancellation_type::none) {
             ctx.log.debug("No response from {} within {}", sock.remote_endpoint(ec).address().to_string(), fip::dns_resolution_timeout);
             result = std::make_error_code(std::errc::timed_out);
         } else {
@@ -282,7 +284,7 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
 
         auto result = co_await receive_dns_response(*sock, transport);
         if (result.has_value()) {
-            ctx.log.notice("Fetched current ip {} from {}", *result, host);
+            ctx.log.debug("Fetched current ip {} from {}", *result, host);
             co_return result;
         } else {
             last_error = result.error();

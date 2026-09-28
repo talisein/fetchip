@@ -264,7 +264,7 @@ DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
                 std::ranges::copy(txt.text, std::ostreambuf_iterator(os));
                 break;
             default:
-                ctx.log.info("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(blob.type));
+                ctx.log.debug("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(blob.type));
                 break;
         }
     } catch (...) {
@@ -345,7 +345,7 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
                 }
                 break;
             default:
-                ctx.log.info("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(res.blob.type));
+                ctx.log.debug("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(res.blob.type));
                 break;
         }
 
