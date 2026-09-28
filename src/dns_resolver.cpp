@@ -102,7 +102,6 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
 
     // TODO: safe signed->unsigned cast
     asio::const_buffer b{buf.data(), static_cast<size_t>(ss.tellp())};
-//    auto range = std::views::take(buf, ss.tellp());
     asio::socket_base::message_flags flags { };
     asio::error_code ec;
 
@@ -122,7 +121,6 @@ namespace {
     struct overloads : Ts... { using Ts::operator()...; };
 }
 
-// Function to receive the DNS response and extract the IPv4 address
 std::expected<std::string, std::error_code>
 DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport) {
     asio::error_code ec;

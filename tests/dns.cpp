@@ -185,7 +185,6 @@ int main() {
     "question deserialize"_test = [] (const auto &pair){
         const auto &[dnshost, host] = pair;
         fip::context ctx(39, true);
-        //ctx.log.set_verbose(true);
         std::ispanstream ss(dnshost);
         jump_table_t jt;
         const auto result = DNSQuestion::deserialize(ctx, ss, jt);
@@ -228,7 +227,6 @@ int main() {
 
     "nasties not long enough"_test = [] (const auto& nasty) {
         fip::context ctx(true);
-        //ctx.log.set_verbose(true);
         std::array <char, 100> buf;
         std::ranges::fill(buf, 0xff);
         std::ranges::copy(nasty, buf.begin());
@@ -274,18 +272,12 @@ int main() {
             expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(err))) << '"' << fuzz << '"';
         }
     } | std::vector<std::pair<std::string_view, DNSError>> {
-//        {"0\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostZeroHostLabelSize},
         {"\x01\0\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
         {"\x6Fx2345678901\003com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
-//        {"1\x00\x01\x00\x01"sv, DNSError::DNSHostToHostNonnumericLabelSize},
         {""sv, DNSError::DNSHostToHostPrematureEOF},
-//        {"\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostNullHostname},
         {"\x01x\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
         {"\x41\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {"\xFFx3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
-//        {"-1x3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostNonnumericLabelSize},
-//        {"abcx3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostNonnumericLabelSize},
-//        {"0x3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostZeroHostLabelSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077a23456789012345678901234567890123456789012345678901234567890123\077b23456789012345678901234567890123456789012345678901234567890123\003com\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x01x\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
@@ -293,7 +285,6 @@ int main() {
 
     "question exceptional istream"_test = [] (const auto &fuzz) {
         fip::context ctx(true);
-        //ctx.log.set_verbose(true);
         std::ispanstream ss(fuzz);
         ss.exceptions(std::ispanstream::failbit | std::ispanstream::eofbit | std::ispanstream::badbit );
 
@@ -310,7 +301,6 @@ int main() {
     "question stream failure"_test = [] (const auto &pair) {
         auto& [in, failcount] = pair;
         fip::context ctx(true);
-        //ctx.log.set_verbose(true);
         throws_after_failcount_streambuf<1> sb(in, failcount);
         std::istream ss(&sb);
 
@@ -326,7 +316,6 @@ int main() {
     "serialize"_test = [] (const auto &pair) {
         const auto &[host, dnshost] = pair;
         fip::context ctx{39, true};
-        //ctx.log.set_verbose(true);
         DNSMessage message {ctx};
         message.add_question(host, DNSQueryType::A);
         std::array <char, 100> buf;
@@ -376,7 +365,6 @@ int main() {
     "serialize-deserialize"_test = [] (const auto &pair) {
         const auto &[host, dnshost] = pair;
         fip::context ctx{39, true};
-        //ctx.log.set_verbose(true);
 
         DNSMessage message {ctx};
         message.add_question(host, DNSQueryType::A);
@@ -443,23 +431,6 @@ int main() {
         RData_AAAA aaaa {};
         inet_pton(AF_INET6, "fe80::aad8:4d9f:1628:34b1", &aaaa.ipv6_address);
         expect(eq("RData_AAAA { ipv6_address: fe80::aad8:4d9f:1628:34b1 }"sv, std::format("{}", aaaa)));
-
-        fip::context ctx(39, true);
-        DNSMessage message(ctx);
-        message.add_question("yahoo.com", DNSQueryType::A);
-        DNSResourceRecord answer;
-        answer.name = "yahoo.com";
-        answer.blob.query_class = DNSQueryClass::IN;
-        answer.blob.type = DNSQueryType::A;
-        answer.blob.rdlength = sizeof(RData_A);
-        answer.blob.ttl = 60;
-        answer.rdata = a;
-        message.add_answer(answer);
-        answer.blob.type = DNSQueryType::AAAA;
-        answer.rdata = aaaa;
-        message.add_answer(answer);
-
-//        expect(eq(""sv, std::format("{}", message)));
     };
 
     "roundtrip message"_test = [] {

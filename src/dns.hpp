@@ -126,7 +126,7 @@ enum class DNSQueryType : uint16_t {
     TXT = 16,        // Text
     AAAA = 28,       // IPv6 address
     SRV = 33,        // Service location
-    OPT = 41,        // Any type (query for any type)
+    OPT = 41,        // EDNS pseudo-record
     ANY = 255,       // Any type (query for any type)
 };
 

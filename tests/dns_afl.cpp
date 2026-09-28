@@ -25,9 +25,6 @@
 __AFL_FUZZ_INIT();
 
 int main(int argc, char *argv[]) {
-
-  // anything else here, e.g. command line arguments, initialization, etc.
-
 #ifdef __AFL_HAVE_MANUAL_CONTROL
   __AFL_INIT();
 #endif
@@ -48,9 +45,6 @@ int main(int argc, char *argv[]) {
     auto s = std::span<char>(reinterpret_cast<char*>(buf), len);
     std::ispanstream ss(s);
 
-    /* Setup function call, e.g. struct target *tmp = libtarget_init() */
-
-    /* Call function to be fuzzed, e.g.: */
     fip::context ctx(true);
     jump_table_t jump_table;
     auto res = DNSQuestion::deserialize(ctx, ss, jump_table);
@@ -62,8 +56,6 @@ int main(int argc, char *argv[]) {
         auto msg = error.message();
         [[maybe_unused]] auto msg_size = msg.size();
     }
-
-    /* Reset state. e.g. libtarget_free(tmp) */
   }
 
   return 0;
