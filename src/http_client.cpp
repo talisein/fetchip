@@ -82,6 +82,8 @@ namespace {
             return true;
         };
 
+        // One deadline for the whole exchange: connect, handshake, write and read on this stream.
+        stream.expires_after(fip::http_execution_timeout);
         auto [ec, ep] = co_await stream.async_connect(endpoints, connect_condition_log_previous_endpoint_failure, token);
         if (ec) {
             // No condition call follows the last attempt.
@@ -123,7 +125,10 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
         if (!connected) {
             co_return std::unexpected(connected.error());
         }
-        co_return co_await exchange(ctx, stream, host, path);
+        auto body = co_await exchange(ctx, stream, host, path);
+        boost::system::error_code ignored;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+        co_return body;
     }
 
     const std::string host_name {host};
@@ -147,6 +152,13 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
         co_return std::unexpected(handshake_ec);
     }
 
-    // No async_shutdown: it waits on the server's close_notify, which some never send.
-    co_return co_await exchange(ctx, stream, host, path);
+    auto body = co_await exchange(ctx, stream, host, path);
+
+    // The body stands whatever the shutdown does; eof and stream_truncated are a server skipping its close_notify.
+    beast::get_lowest_layer(stream).expires_after(fip::connection_shutdown_timeout);
+    auto [shutdown_ec] = co_await stream.async_shutdown(token);
+    if (shutdown_ec && shutdown_ec != asio::error::eof && shutdown_ec != asio::ssl::error::stream_truncated) {
+        ctx.log.debug("TLS shutdown with {} failed: {}", host, shutdown_ec.message());
+    }
+    co_return body;
 }

@@ -4,7 +4,7 @@ cxxopts_dep = dependency('cxxopts',
                          fallback: ['cxxopts'])
 
 sdjournal_dep = dependency('libsystemd')
-boost_dep = dependency('boost', modules: ['system'], version: '>=1.84')
+boost_dep = dependency('boost', modules: ['system'], version: '>=1.86')
 openssl_dep = dependency('openssl', version: '>=3.0.0')
 enum_dep = dependency('magic_enum', fallback: ['magic_enum'])
 pfr_dep = dependency('PFR', fallback: ['PFR'])

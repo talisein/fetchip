@@ -121,16 +121,23 @@ namespace {
 asio::awaitable<std::expected<std::string, std::error_code>>
 DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport) {
     std::array<char, DNSBufferSize> buf;
-    auto [ec, bytes_received] = co_await sock.async_receive(asio::buffer(buf), asio::as_tuple(asio::use_awaitable));
+    auto [ec, bytes_received] = co_await sock.async_receive(asio::buffer(buf),
+        asio::cancel_after(fip::dns_resolution_timeout, asio::as_tuple(asio::use_awaitable)));
 
     if (ec || 0 == bytes_received) {
-        ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
+        std::error_code result = ec;
+        if (ec == asio::error::operation_aborted) {
+            ctx.log.debug("No response from {} within {}", sock.remote_endpoint(ec).address().to_string(), fip::dns_resolution_timeout);
+            result = std::make_error_code(std::errc::timed_out);
+        } else {
+            ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
+        }
         boost::system::error_code close_ec;
         sock.close(close_ec);
         if (close_ec) {
             ctx.log.debug("Couldn't even close the socket?! {}", close_ec.message());
         }
-        co_return std::unexpected(ec);
+        co_return std::unexpected(result);
     }
     sock.close(ec);
     if (ec) {
