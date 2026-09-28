@@ -17,6 +17,7 @@
 #include "context.hpp"
 #include "dns.hpp"
 #include "dns_resolver.hpp"
+#include "fetch_error.hpp"
 
 using namespace std::literals;
 enum class ServiceType {
@@ -99,20 +100,17 @@ query_http_public_ip(fip::context& ctx, const Service& service)
     }
 }
 
-std::expected<std::string, std::error_code>
+asio::awaitable<std::expected<std::string, std::error_code>>
 query_public_ip(fip::context &ctx, const Service& service)
 {
     if (service.type == ServiceType::HTTP || service.type == ServiceType::HTTPS) {
-        auto res = query_http_public_ip(ctx, service);
-        if (!res) return std::unexpected(res.error());
-        else return res.value();
+        co_return query_http_public_ip(ctx, service);
     } else if (service.type == ServiceType::DNS) {
         DNSResolver resolver {ctx};
-        auto res = resolver.query_dns_public_ip(service.address, *service.resolver, *service.query_type);
-        if (!res) return std::unexpected(res.error());
-        else return res.value();
+        co_return co_await resolver.query_dns_public_ip(service.address, *service.resolver, *service.query_type);
     } else {
-        return "Unknown service type.";
+        ctx.log.debug("Unknown service type {}", magic_enum::enum_integer(service.type));
+        co_return std::unexpected(make_error_code(FetchError::UnknownServiceType));
     }
 }
 
@@ -192,7 +190,13 @@ int main(int argc, char* argv[]) {
             ctx.log.set_verbose(true);
         }
 
-        const auto publicIp = query_public_ip(ctx, selectedService);
+        std::expected<std::string, std::error_code> publicIp = std::unexpected(std::error_code {});
+        asio::co_spawn(ctx.io_context, query_public_ip(ctx, selectedService),
+                       [&publicIp](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
+                           if (e) std::rethrow_exception(e);
+                           publicIp = std::move(result);
+                       });
+        ctx.io_context.run();
         if (publicIp) {
             std::cout << publicIp.value() << std::endl;
         } else {

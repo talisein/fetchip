@@ -86,7 +86,7 @@ DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
     return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
 }
 
-std::expected<void, std::error_code>
+asio::awaitable<std::expected<void, std::error_code>>
 DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, DNSQueryType query_type)
 {
     DNSMessage message(ctx);
@@ -97,23 +97,20 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
     auto serialized = message.serialize(ss);
     if (!serialized) {
         ctx.log.debug("Failed to serialize: {}", serialized.error().message());
-        return std::unexpected(serialized.error());
+        co_return std::unexpected(serialized.error());
     }
 
     // TODO: safe signed->unsigned cast
     asio::const_buffer b{buf.data(), static_cast<size_t>(ss.tellp())};
-    asio::socket_base::message_flags flags { };
-    boost::system::error_code ec;
-
-    sock.send(b, flags, ec);
+    auto [ec, bytes_sent] = co_await sock.async_send(b, asio::as_tuple(asio::use_awaitable));
 
     if (ec) {
         ctx.log.debug("Failed to send DNS query: {}", ec.message());
-        return std::unexpected(ec);
+        co_return std::unexpected(ec);
     }
 
     ctx.log.debug("Sent DNS query: {}", message);
-    return {};
+    co_return std::expected<void, std::error_code> {};
 }
 
 namespace {
@@ -121,12 +118,10 @@ namespace {
     struct overloads : Ts... { using Ts::operator()...; };
 }
 
-std::expected<std::string, std::error_code>
+asio::awaitable<std::expected<std::string, std::error_code>>
 DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport) {
-    boost::system::error_code ec;
-    asio::socket_base::message_flags flags { };
     std::array<char, DNSBufferSize> buf;
-    auto bytes_received = sock.receive(asio::buffer(buf), flags, ec);
+    auto [ec, bytes_received] = co_await sock.async_receive(asio::buffer(buf), asio::as_tuple(asio::use_awaitable));
 
     if (ec || 0 == bytes_received) {
         ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
@@ -135,15 +130,19 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamil
         if (close_ec) {
             ctx.log.debug("Couldn't even close the socket?! {}", close_ec.message());
         }
-        return std::unexpected(ec);
+        co_return std::unexpected(ec);
     }
     sock.close(ec);
     if (ec) {
         ctx.log.warning("Failed to close UDP socket: {}. Ignoring...", ec.message());
     }
 
-    auto view = std::views::take(buf, bytes_received);
-    std::ispanstream ss(view);
+    co_return parse_dns_response(std::span(buf).first(bytes_received), transport);
+}
+
+std::expected<std::string, std::error_code>
+DNSResolver::parse_dns_response(std::span<const char> response, fip::AddressFamily transport) {
+    std::ispanstream ss(response);
 
     auto message = DNSMessage::deserialize(ctx, ss);
     if (!message) {
@@ -215,37 +214,38 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamil
     return std::string(res);
 }
 
-std::expected<asio::ip::basic_resolver<asio::ip::udp>::results_type, std::error_code>
+asio::awaitable<std::expected<asio::ip::udp::resolver::results_type, std::error_code>>
 DNSResolver::get_resolver_address(std::string_view resolver_name)
 {
     using namespace std::literals;
-    asio::ip::basic_resolver<asio::ip::udp> resolver {ctx.io_context};
+    constexpr auto token = asio::as_tuple(asio::use_awaitable);
+    asio::ip::udp::resolver resolver {ctx.io_context};
     boost::system::error_code ec;
-    asio::ip::basic_resolver<asio::ip::udp>::results_type result;
+    asio::ip::udp::resolver::results_type result;
     switch (ctx.requested_family) {
     case fip::AddressFamily::V4:
-        result = resolver.resolve(asio::ip::udp::v4(), resolver_name, "domain"sv, ec);
+        std::tie(ec, result) = co_await resolver.async_resolve(asio::ip::udp::v4(), resolver_name, "domain"sv, token);
         break;
     case fip::AddressFamily::V6:
-        result = resolver.resolve(asio::ip::udp::v6(), resolver_name, "domain"sv, ec);
+        std::tie(ec, result) = co_await resolver.async_resolve(asio::ip::udp::v6(), resolver_name, "domain"sv, token);
         break;
     case fip::AddressFamily::Any:
-        result = resolver.resolve(resolver_name, "domain"sv, ec);
+        std::tie(ec, result) = co_await resolver.async_resolve(resolver_name, "domain"sv, token);
         break;
     }
     if (ec) {
         ctx.log.debug("Failed to resolve the resolver: {}", ec.message());
-        return std::unexpected(ec);
+        co_return std::unexpected(ec);
     }
 
-    return result;
+    co_return result;
 }
 
-std::expected<std::string, std::error_code>
+asio::awaitable<std::expected<std::string, std::error_code>>
 DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSProviderAcceptedQueryType provider) {
-    auto resolver_addrs = get_resolver_address(resolver);
+    auto resolver_addrs = co_await get_resolver_address(resolver);
     if (!resolver_addrs) {
-        return std::unexpected(resolver_addrs.error());
+        co_return std::unexpected(resolver_addrs.error());
     }
 
     std::error_code last_error {};
@@ -266,17 +266,17 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
             continue;
         }
 
-        auto sent_query = send_dns_query(*sock, host, *query_type);
+        auto sent_query = co_await send_dns_query(*sock, host, *query_type);
         if (!sent_query) {
             last_error = sent_query.error();
             ctx.log.debug("Looping: {}", last_error.message());
             continue;
         }
 
-        auto result = receive_dns_response(*sock, transport);
+        auto result = co_await receive_dns_response(*sock, transport);
         if (result.has_value()) {
             ctx.log.notice("Fetched current ip {} from {}", *result, host);
-            return result;
+            co_return result;
         } else {
             last_error = result.error();
             ctx.log.debug("Looping: {}", last_error.message());
@@ -284,5 +284,5 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
         }
     }
 
-    return std::unexpected(last_error);
+    co_return std::unexpected(last_error);
 }

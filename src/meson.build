@@ -5,6 +5,7 @@ fetchip_files = [
 lib_srcs = [
   'dns.cpp',
   'dns_resolver.cpp',
+  'fetch_error.cpp',
 ]
 
 lib = static_library('fetchip', lib_srcs,
