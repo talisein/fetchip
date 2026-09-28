@@ -435,6 +435,9 @@ int main() {
 
         RData_A a {};
         inet_pton(AF_INET, "39.139.239.39", &a.ipv4_address);
+        if constexpr (std::endian::native != std::endian::big) {
+            a.ipv4_address.s_addr = std::byteswap(a.ipv4_address.s_addr);
+        }
         expect(eq("RData_A { ipv4_address: 39.139.239.39 }"sv, std::format("{}", a)));
         RData_AAAA aaaa {};
         inet_pton(AF_INET6, "fe80::aad8:4d9f:1628:34b1", &aaaa.ipv6_address);
@@ -500,10 +503,59 @@ int main() {
         auto message = DNSMessage::deserialize(ctx, ss);
         expect(message.has_value());
         if (message) {
-            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: RecursionAvailable|RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, DNSResourceRecord { Name: myip.opendns.com, Type: A, Class: IN, TTL: 0, RDataLength: 4, RData_A { ipv4_address: 89.80.110.72 } }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 4096, ExtendedRCode: 0, Version: 0, Flags: DO, RDataLength: 0 } }"sv, std::format("{}", *message)));
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: RecursionAvailable|RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, DNSResourceRecord { Name: myip.opendns.com, Type: A, Class: IN, TTL: 0, RDataLength: 4, RData_A { ipv4_address: 72.110.80.89 } }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 4096, ExtendedRCode: 0, Version: 0, Flags: DO, RDataLength: 0 } }"sv, std::format("{}", *message)));
         } else {
             expect(eq("nyan!"sv, message.error().message()));
         }
 
+    };
+
+    "dig read txt"_test = [] {
+        constexpr auto buf = "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\16\015198.51.100.39"sv;
+        std::ispanstream ss {buf};
+        fip::context ctx(39, true);
+        ctx.log.set_verbose(true);
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(message.has_value());
+        if (message) {
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: Authoritative, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 0 }, DNSQuestion { Name: o-o.myaddr.l.google.com, Type: TXT, Class: IN }, DNSResourceRecord { Name: o-o.myaddr.l.google.com, Type: TXT, Class: IN, TTL: 60, RDataLength: 14, RData_TXT: 198.51.100.39 } }"sv, std::format("{}", *message)));
+        } else {
+            expect(eq("nyan!"sv, message.error().message()));
+        }
+    };
+
+    "txt multiple strings"_test = [] {
+        constexpr auto buf = "\314\347\204\0\0\1\0\1\0\0\0\1\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\25\015198.51.100.39\6second\0\0)\20\0\0\0\0\0\0\0"sv;
+        std::ispanstream ss {buf};
+        fip::context ctx(39, true);
+        ctx.log.set_verbose(true);
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(message.has_value());
+        if (message) {
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: Authoritative, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: o-o.myaddr.l.google.com, Type: TXT, Class: IN }, DNSResourceRecord { Name: o-o.myaddr.l.google.com, Type: TXT, Class: IN, TTL: 60, RDataLength: 21, RData_TXT: 198.51.100.39 }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 4096, ExtendedRCode: 0, Version: 0, Flags: DO, RDataLength: 0 } }"sv, std::format("{}", *message)));
+        } else {
+            expect(eq("nyan!"sv, message.error().message()));
+        }
+    };
+
+    "rdlength failures"_test = [] (const auto& buf) {
+        std::ispanstream ss {buf};
+        fip::context ctx(39, true);
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(eq(message.has_value(), false)) << buf;
+        if (!message) {
+            expect(eq(magic_enum::enum_name(static_cast<DNSError>(message.error().value())), magic_enum::enum_name(DNSError::DeserializePrematureEOF))) << buf;
+        }
+    } | std::vector<std::string_view> {
+        "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\16\017198.51.100.39"sv,
+        "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\16\015198.51.100"sv,
+        "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\0"sv,
+        "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\1\0\1\0\0\0\0\0\5HnPY!"sv,
+        "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\4HnPY"sv,
+        "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\0210123456789abcdefg"sv,
+        "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\20HnPY"sv,
     };
 }

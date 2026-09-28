@@ -15,6 +15,7 @@
 
 #include <magic_enum/magic_enum.hpp>
 #include "context.hpp"
+#include "dns.hpp"
 #include "dns_resolver.hpp"
 
 using namespace std::literals;
@@ -29,6 +30,7 @@ struct Service {
     std::string_view address;
     std::optional<std::string_view> path;
     std::optional<std::string_view> resolver;
+    std::optional<DNSQueryType> query_type;
     ServiceType type;
 };
 
@@ -47,6 +49,8 @@ whoami.ipv6.akahelp.net
 https://www.akamai.com/blog/developers/introducing-new-whoami-tool-dns-resolver-information
 
 dig +short ANY o-o.myaddr.l.google.com @ns1.google.com // maybe @dns.google ?
+
+dig +short whatismyip.on.quad9.net @9.9.9.9
 
 
 
@@ -67,17 +71,19 @@ dig +short ANY o-o.myaddr.l.google.com @ns1.google.com // maybe @dns.google ?
 
 // Initialize the array using std::to_array
 constexpr auto services = std::to_array<Service>({
-        {"http://ifconfig.me", "/ip", std::nullopt, ServiceType::HTTP},
-        {"https://ifconfig.me", "/ip", std::nullopt, ServiceType::HTTPS},
-        {"http://icanhazip.com", "/", std::nullopt, ServiceType::HTTP},
-        {"https://icanhazip.com", "/", std::nullopt, ServiceType::HTTPS},
-        {"myip.opendns.com", std::nullopt, "resolver1.opendns.com", ServiceType::DNS},
-        //{"whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", ServiceType::DNS},
-        //{"o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", ServiceType::DNS},// TXT
+        {"http://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"https://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"http://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"https://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"myip.opendns.com", std::nullopt, "resolver1.opendns.com", DNSQueryType::A, ServiceType::DNS},
+        {"whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", DNSQueryType::A, ServiceType::DNS},
+        {"o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", DNSQueryType::TXT, ServiceType::DNS},
+        {"whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", DNSQueryType::A, ServiceType::DNS},
         // Add more services if needed
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.resolver.has_value(); else return true; }) );
+static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.query_type.has_value(); else return true; }) );
 
 std::expected<std::string, std::error_code>
 query_http_public_ip(fip::context& ctx, const Service& service)
@@ -102,7 +108,7 @@ query_public_ip(fip::context &ctx, const Service& service)
         else return res.value();
     } else if (service.type == ServiceType::DNS) {
         DNSResolver resolver {ctx};
-        auto res = resolver.query_dns_public_ip(service.address, *service.resolver);
+        auto res = resolver.query_dns_public_ip(service.address, *service.resolver, *service.query_type);
         if (!res) return std::unexpected(res.error());
         else return res.value();
     } else {

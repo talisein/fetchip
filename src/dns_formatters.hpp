@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include <format>
 #include "dns.hpp"
 
@@ -55,7 +56,8 @@ struct std::formatter<RData_A> {
     template <typename FormatContext>
     auto format(RData_A p, FormatContext& ctx) const {
         std::array<char, INET_ADDRSTRLEN + 1> buf;
-        auto res = inet_ntop(AF_INET, &p.ipv4_address, buf.data(), buf.size());
+        const in_addr network_order { std::endian::native == std::endian::big ? p.ipv4_address.s_addr : std::byteswap(p.ipv4_address.s_addr) };
+        auto res = inet_ntop(AF_INET, &network_order, buf.data(), buf.size());
         if (res) {
             return format_to(ctx.out(), "RData_A {{ ipv4_address: {} }}"sv, buf.begin());
         } else {

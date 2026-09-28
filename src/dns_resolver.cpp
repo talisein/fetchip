@@ -1,3 +1,4 @@
+#include <bit>
 #include <ranges>
 #include <span>
 #include <spanstream>
@@ -35,11 +36,10 @@ DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
 }
 
 std::expected<void, std::error_code>
-DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host)
+DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, DNSQueryType query_type)
 {
     DNSMessage message(ctx);
-    // TODO: variable query type depending on service and request
-    message.add_question(host, DNSQueryType::A);
+    message.add_question(host, query_type);
 
     std::array<char, DNSBufferSize> buf;
     std::ospanstream ss {buf};
@@ -114,17 +114,23 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock) {
         return std::unexpected(make_error_code(DNSError::DNSResolverNoAnswers));
     }
 
+    // TODO: refactor to propagate error types and not use char*
     std::array<char, INET6_ADDRSTRLEN + 1> address {};
     const char *res = nullptr;
     std::visit(overloads
                {
                    [&](const RData_A& a) {
-                       res = inet_ntop(AF_INET, &a.ipv4_address, address.data(), address.size());
+                       const in_addr network_order { std::endian::native == std::endian::big ? a.ipv4_address.s_addr : std::byteswap(a.ipv4_address.s_addr) };
+                       res = inet_ntop(AF_INET, &network_order, address.data(), address.size());
                    },
                    [&](const RData_AAAA&) {
                        res = inet_ntop(AF_INET6, std::addressof(std::get<RData_AAAA>(answers[0].rdata).ipv6_address), address.data(), address.size());
                    },
                    [&](const RData_TXT& txt) {
+                       if (txt.text.size() >= address.size()) {
+                           ctx.log.debug("TXT answer too long for an address: {} bytes", txt.text.size());
+                           return;
+                       }
                        std::ranges::copy(txt.text, address.data());
                        res = address.data();
                    },
@@ -157,7 +163,7 @@ DNSResolver::get_resolver_address(std::string_view resolver_name)
 }
 
 std::expected<std::string, std::error_code>
-DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver) {
+DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query_type) {
     auto resolver_addrs = get_resolver_address(resolver);
     if (!resolver_addrs) {
         return std::unexpected(resolver_addrs.error());
@@ -173,7 +179,7 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
             continue;
         }
 
-        auto sent_query = send_dns_query(*sock, host);
+        auto sent_query = send_dns_query(*sock, host, query_type);
         if (!sent_query) {
             last_error = sent_query.error();
             ctx.log.debug("Looping: {}", last_error.message());

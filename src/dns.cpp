@@ -256,6 +256,11 @@ DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
                 break;
             case DNSQueryType::TXT:
                 txt = std::get<RData_TXT>(rdata);
+                if (txt.text.size() > std::numeric_limits<uint8_t>::max()) {
+                    ctx.log.debug("TXT string too long to serialize: {} bytes", txt.text.size());
+                    return std::unexpected(make_error_code(DNSError::SerializeStreamFailure));
+                }
+                os.put(static_cast<char>(txt.text.size()));
                 std::ranges::copy(txt.text, std::ostreambuf_iterator(os));
                 break;
             default:
@@ -288,21 +293,47 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
 
         ctx.log.debug("Got blob type '{}'", magic_enum::enum_name(res.blob.type));
 
-        RData_AAAA aaaa;
+        RData_AAAA aaaa {};
         RData_TXT txt;
         uint8_t txt_len;
         std::expected<RData_OPT, std::error_code> opt;
         switch (res.blob.type) {
             case DNSQueryType::A:
+                if (res.blob.rdlength != sizeof(in_addr)) {
+                    ctx.log.debug("A record with rdlength {}", res.blob.rdlength);
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
                 res.rdata = blob::load<RData_A>(loader, blob::tag<fetchip_construction_policy>());
                 break;
             case DNSQueryType::AAAA:
-                std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(std::min<size_t>(res.blob.rdlength, sizeof(aaaa.ipv6_address.s6_addr))), aaaa.ipv6_address.s6_addr);
+                if (res.blob.rdlength != sizeof(aaaa.ipv6_address.s6_addr)) {
+                    ctx.log.debug("AAAA record with rdlength {}", res.blob.rdlength);
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
+                if (auto copied = std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(sizeof(aaaa.ipv6_address.s6_addr)), aaaa.ipv6_address.s6_addr);
+                    copied.out != std::end(aaaa.ipv6_address.s6_addr)) {
+                    ctx.log.debug("Premature EOF deserializing AAAA record");
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
                 res.rdata = aaaa;
                 break;
             case DNSQueryType::TXT:
+                if (res.blob.rdlength == 0) {
+                    ctx.log.debug("TXT record with rdlength 0");
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
                 txt_len = static_cast<uint8_t>(is.get());
+                if (!is || 1 + txt_len > res.blob.rdlength) {
+                    ctx.log.debug("TXT string length {} overruns rdlength {}", txt_len, res.blob.rdlength);
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
                 std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(txt_len), std::back_inserter(txt.text));
+                if (txt.text.size() != txt_len) {
+                    ctx.log.debug("Premature EOF deserializing TXT record. {} < {}", txt.text.size(), txt_len);
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
+                // only the first character-string is kept
+                is.ignore(res.blob.rdlength - 1 - txt_len);
                 res.rdata = txt;
                 break;
             case DNSQueryType::OPT:
