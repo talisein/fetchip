@@ -105,6 +105,8 @@ int main() {
         {"averylonghostname.com"sv,                   "\021averylonghostname\003com\0"sv},
         {"verylonghostname.averylonghostname.com"sv,  "\020verylonghostname\021averylonghostname\3com\0"sv},
         {"123.456.com"sv,                             "\003123\003456\003com\0"sv},
+        // The root name.
+        {""sv,                                        "\0"sv},
     };
 
     "question serialization failures"_test = [] (const auto &in) {
@@ -121,6 +123,48 @@ int main() {
         expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
         {"10tenletters10tenletters10tenletters3com"sv, DNSError::HostToDNSHostStreamFailure},
+    };
+
+    "question serialization empty labels"_test = [] (const auto &host) {
+        fip::context ctx{39, true};
+        DNSQuestion question { std::string(host), { DNSQueryType::A, DNSQueryClass::IN } };
+        std::array <char, 100> buf;
+        std::ranges::fill(buf, 0xff);
+        std::ospanstream ss(buf);
+
+        auto result = question.serialize(ctx, ss);
+        expect(!result.has_value()) << host;
+        if (!result.has_value()) {
+            expect(eq(result.error(), DNSError::HostToDNSHostEmptyLabel)) << host;
+        }
+        // Refused before the first length octet, so no stray zero octet reaches the wire.
+        expect(ss.span().empty()) << host;
+    } | std::vector<std::string_view> {
+        "."sv,
+        "a."sv,
+        ".a"sv,
+        "a..b"sv,
+        "example.com."sv,
+    };
+
+    "validate dns name"_test = [] (const auto &pair) {
+        const auto &[name, want] = pair;
+        expect(validate_dns_name(name) == want) << name;
+    } | std::vector<std::pair<std::string, std::expected<void, std::error_code>>> {
+        // The root name.
+        {""s, {}},
+        {"a"s, {}},
+        {"."s, std::unexpected(make_error_code(DNSError::HostToDNSHostEmptyLabel))},
+        {"a."s, std::unexpected(make_error_code(DNSError::HostToDNSHostEmptyLabel))},
+        {".a"s, std::unexpected(make_error_code(DNSError::HostToDNSHostEmptyLabel))},
+        {"a..b"s, std::unexpected(make_error_code(DNSError::HostToDNSHostEmptyLabel))},
+        // The limits are spelled out, not taken from the constants under test.
+        {std::string(63, 'a'), {}},
+        {std::string(64, 'a'), std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostLabelSize))},
+        // 253 text characters, a 255-octet name.
+        {std::format("{0}.{0}.{0}.{1}", std::string(63, 'a'), std::string(61, 'b')), {}},
+        // 254 text characters, a 256-octet name.
+        {std::format("{0}.{0}.{0}.{1}", std::string(63, 'a'), std::string(62, 'b')), std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostnameSize))},
     };
 
     "question serialization exception"_test = [] (const auto &in) {
@@ -244,6 +288,8 @@ int main() {
     } | std::vector<std::string_view> {
         "example.test.domain"sv,
         "averylonghostname.domain"sv,
+        // The root name.
+        ""sv,
     };
 
     "nasties not long enough"_test = [] (const auto& nasty) {

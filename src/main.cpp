@@ -50,13 +50,6 @@ constexpr std::optional<DNSQueryType> dns_query_type(ServiceType type)
     return std::nullopt;
 }
 
-// What host_to_dnshost encodes: labels of at most 63 octets in a name of at most 253 text characters.
-constexpr bool is_dns_name(std::string_view name)
-{
-    return name.size() <= 253
-        && std::ranges::all_of(std::views::split(name, "."sv), [](const auto& label) { return std::ranges::size(label) <= 63; });
-}
-
 struct Service {
     // Shared by the HTTP and HTTPS entries for one provider, which -i picks between, and by the DNS_A and DNS_AAAA entries, which -4 or -6 picks between.
     std::string_view name;
@@ -95,7 +88,7 @@ constexpr auto services = std::to_array<Service>({
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return s.resolver.has_value(); else return true; }) );
-static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return is_dns_name(s.address); else return true; }) );
+static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return validate_dns_name(s.address).has_value(); else return true; }) );
 
 // DNS_A and DNS_AAAA services answer in their query's family; the others answer in whichever family connected.
 bool serves_family(const Service& service, fip::AddressFamily family)

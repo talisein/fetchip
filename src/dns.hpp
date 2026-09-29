@@ -3,6 +3,8 @@
 #include <vector>
 #include <expected>
 #include <map>
+#include <ranges>
+#include <string_view>
 #include <sys/socket.h>
 
 #include <magic_enum/magic_enum.hpp>
@@ -300,6 +302,7 @@ enum class DNSError
     HostToDNSHostStreamFailure,
     HostToDNSHostExcessiveHostLabelSize,
     HostToDNSHostExcessiveHostnameSize,
+    HostToDNSHostEmptyLabel,
     SerializeUnexpectedException,
     SerializeStreamFailure,
     DeserializeUnexpectedException,
@@ -323,6 +326,33 @@ namespace std
   template <> struct is_error_code_enum<DNSError> : fip::fip_error_code
   {
   };
+}
+
+// RFC 1035 §2.3.4: a label is at most 63 octets and a name at most 255 octets on the wire.
+constexpr size_t max_label_octets { 63 };
+constexpr size_t max_name_octets { 255 };
+// Each dot in the text stands for a length octet; the first label's length octet and the terminating zero have none.
+constexpr size_t max_name_text { max_name_octets - 2 };
+
+[[nodiscard]] constexpr std::expected<void, std::error_code>
+validate_dns_name(std::string_view name) noexcept
+{
+    using namespace std::literals;
+
+    if (max_name_text < name.size()) {
+        return std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostnameSize));
+    }
+    // "" splits into no labels: it is the root, the name dnshost_to_host reads from a lone zero octet.
+    for (const auto& label : std::views::split(name, "."sv)) {
+        // RFC 1034 §3.1: the null label is reserved for the root.
+        if (std::ranges::empty(label)) {
+            return std::unexpected(make_error_code(DNSError::HostToDNSHostEmptyLabel));
+        }
+        if (max_label_octets < std::ranges::size(label)) {
+            return std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostLabelSize));
+        }
+    }
+    return {};
 }
 
 class DNSMessage

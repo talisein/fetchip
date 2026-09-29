@@ -68,16 +68,11 @@ namespace {
     host_to_dnshost(fip::context& ctx, std::string_view host, std::ostream& os) {
         using namespace std::literals;
 
-        // 253 text characters is the 255-octet wire limit.
-        if (253 < host.size()) {
-            ctx.log.debug("Excessive hostname size {} > 253: '{}'", host.size(), host);
-            return std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostnameSize));
+        if (auto valid = validate_dns_name(host); !valid) {
+            ctx.log.debug("Invalid DNS name '{}' of size {}: {}", host, host.size(), valid.error().message());
+            return std::unexpected(valid.error());
         }
         for (const auto &label : std::views::split(host, "."sv)) {
-            if (63 < std::ranges::size(label)) {
-                ctx.log.debug("Excessive host label size {} > 63: '{}'", std::ranges::size(label), std::string_view(label));
-                return std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostLabelSize));
-            }
             os.put(static_cast<char>(std::ranges::size(label)));
             if (std::ranges::copy(label, std::ostreambuf_iterator(os)).out.failed() || os.fail()) {
                 return std::unexpected(make_error_code(DNSError::HostToDNSHostStreamFailure));
@@ -98,12 +93,6 @@ namespace {
         } else {
             return make_error_code(DNSError::DNSHostToHostStreamFailure);
         }
-    }
-
-    consteval std::streamoff
-    operator""_soff(unsigned long long x)
-    {
-        return static_cast<std::streamoff>(x);
     }
 
     // The stream's position as a compression pointer names it; tellg() answers -1 once the stream has failed.
@@ -165,9 +154,8 @@ namespace {
                     // The accumulated prefix ends in '.'; the cached name has none.
                     auto res = hostname.str() + it->second;
                     if (0 < res.size() && '.' == res.back()) res.pop_back(); // Pointer to the root name
-                    // 253 text characters is the 255-octet wire limit.
-                    if (253 < res.size()) {
-                        ctx.log.debug("Excessive hostname size {} > 253: '{}'", res.size(), res);
+                    if (max_name_text < res.size()) {
+                        ctx.log.debug("Excessive hostname size {} > {}: '{}'", res.size(), max_name_text, res);
                         return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
                     }
 
@@ -194,7 +182,7 @@ namespace {
                 continue;
             }
 
-            if (63 < label_size) {
+            if (max_label_octets < label_size) {
                 return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostLabelSize));
             }
 
@@ -205,9 +193,9 @@ namespace {
             *os_iter = '.';
 
             // Each label is followed by '.', so the stream is one shy of the
-            // wire length: 254 here is the 255-octet limit.
-        } while (hostname.tellp() < 255_soff);
-        ctx.log.debug("Excessive hostname size {} > 254: '{}'", static_cast<std::streamoff>(hostname.tellp()), hostname.view());
+            // wire length: the terminating zero octet must still fit.
+        } while (hostname.tellp() < static_cast<std::streamoff>(max_name_octets));
+        ctx.log.debug("Excessive hostname size {} > {}: '{}'", static_cast<std::streamoff>(hostname.tellp()) + 1, max_name_octets, hostname.view());
         return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
     }
 }
