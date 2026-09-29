@@ -36,7 +36,7 @@ constexpr auto properties(blob::tag<DNSResourceRecordBlob>) {
     blob::properties_t<DNSResourceRecordBlob> props {};
 
     props.member<&DNSResourceRecordBlob::type>().endianness           = std::endian::big;
-    props.member<&DNSResourceRecordBlob::type>().validate_enum        = true;
+    props.member<&DNSResourceRecordBlob::type>().validate_enum        = false;
     props.member<&DNSResourceRecordBlob::query_class>().endianness    = std::endian::big;
     props.member<&DNSResourceRecordBlob::query_class>().validate_enum = false; // Could be UDP payload
     props.member<&DNSResourceRecordBlob::ttl>().endianness            = std::endian::big;
@@ -55,7 +55,7 @@ constexpr auto properties(blob::tag<DNSOptionBlob>) {
     blob::properties_t<DNSOptionBlob> props {};
     props.expected_size = 4;
     props.member<&DNSOptionBlob::option_code>().endianness    = std::endian::big;
-    props.member<&DNSOptionBlob::option_code>().validate_enum = true;
+    props.member<&DNSOptionBlob::option_code>().validate_enum = false;
     props.member<&DNSOptionBlob::data_size>().endianness      = std::endian::big;
     return props;
 }

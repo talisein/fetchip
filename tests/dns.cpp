@@ -608,6 +608,41 @@ int main() {
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\20HnPY"sv,
         // OPT option claiming 8 data bytes with only 4 left in the message.
         "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374"sv,
+        // RRSIG claiming 8 rdata bytes with only 3 left in the message.
+        "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\56\0\1\0\0\0\0\0\10abc"sv,
+    };
+
+    "skip unknown record types"_test = [] {
+        constexpr auto buf = "\314\347\201\200\0\1\0\2\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\300\f\0\56\0\1\0\0\0\0\0\3abc\300\f\0\1\0\1\0\0\0\0\0\4HnPY\300\f\0\101\0\1\0\0\0\0\0\2xy"sv;
+        fip::context ctx(39, true);
+        std::ispanstream ss {buf};
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(message.has_value());
+        if (message) {
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: RecursionAvailable|RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 2, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, DNSResourceRecord { Name: myip.opendns.com, Type: 46, Class: IN, TTL: 0, RDataLength: 3, (unimplemented rdata formatter) }, DNSResourceRecord { Name: myip.opendns.com, Type: A, Class: IN, TTL: 0, RDataLength: 4, RData_A { ipv4_address: 72.110.80.89 } }, DNSResourceRecord { Name: myip.opendns.com, Type: 65, Class: IN, TTL: 0, RDataLength: 2, (unimplemented rdata formatter) } }"sv, std::format("{}", *message)));
+        }
+
+        DNSResolver resolver {ctx};
+        DNSMessage query {ctx};
+        query.add_question("myip.opendns.com", DNSQueryType::A);
+        auto address = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4);
+        expect(address.has_value());
+        if (address) {
+            expect(eq("72.110.80.89"sv, *address));
+        }
+    };
+
+    "keep unknown edns options"_test = [] {
+        constexpr auto buf = "\314\347\201\200\0\1\0\1\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\300\f\0\1\0\1\0\0\0\0\0\4HnPY\0\0)\20\0\0\0\0\0\0\10OD\0\4\1\2\3\4"sv;
+        fip::context ctx(39, true);
+        std::ispanstream ss {buf};
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(message.has_value());
+        if (message) {
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: RecursionAvailable|RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, DNSResourceRecord { Name: myip.opendns.com, Type: A, Class: IN, TTL: 0, RDataLength: 4, RData_A { ipv4_address: 72.110.80.89 } }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 4096, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 8, EDNS0_Option { OptionCode: 20292, OptionDataSize: 4, Data: { 0x1234 } } } }"sv, std::format("{}", *message)));
+        }
     };
 
     "address family of text"_test = [] {

@@ -32,18 +32,6 @@ dns_exception_handler(fip::context& ctx,
 {
     try {
         throw;
-    } catch (blob::invalid_enum_value_exception_for<&DNSOptionBlob::option_code>& e) {
-        ctx.log.debug("blobify invalid EDNSOptionCode {}", std::to_underlying(e.actual_value));
-        return make_error_code(DNSError::DeserializeUnimplementedQueryType);
-    } catch (blob::invalid_enum_value_exception_for<&EDNS_ResourceRecord::type>& e) {
-        ctx.log.debug("blobify invalid DNSQueryType {}", std::to_underlying(e.actual_value));
-        return make_error_code(DNSError::DeserializeUnimplementedQueryType);
-    } catch (blob::invalid_enum_value_exception_for<&DNSResourceRecordBlob::query_class>& e) {
-        ctx.log.debug("blobify invalid DNSQueryClass {}", std::to_underlying(e.actual_value));
-        return make_error_code(DNSError::DeserializeUnimplementedQueryType);
-    } catch (blob::invalid_enum_value_exception_for<&DNSResourceRecordBlob::type>& e) {
-        ctx.log.debug("blobify invalid DNSQueryType {}", std::to_underlying(e.actual_value));
-        return make_error_code(DNSError::DeserializeUnimplementedQueryType);
     } catch (blob::exception& e) {
         ctx.log.debug("blobify exception! {} typeid {}", src.function_name(), typeid(e).name());
         return DNSError::BlobifyStore;
@@ -229,7 +217,7 @@ RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexce
             std::ranges::copy(input_range | std::views::take(option.blob.data_size), std::back_inserter(option.data));
             if (option.data.size() < option.blob.data_size) {
                 ctx.log.debug("Premature EOF deserializing option {}. {} < {}",
-                              magic_enum::enum_name(option.blob.option_code),
+                              enum_name_or_value(option.blob.option_code),
                               option.blob.data_size,
                               option.data.size());
                 return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
@@ -278,7 +266,7 @@ DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
                 }
                 break;
             default:
-                ctx.log.debug("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(blob.type));
+                ctx.log.debug("Unimplemented! deserialized resource record type {}", enum_name_or_value(blob.type));
                 break;
         }
     } catch (...) {
@@ -305,7 +293,7 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
 
         res.blob = blob::load<DNSResourceRecordBlob>(loader, blob::tag<fetchip_construction_policy>());
 
-        ctx.log.debug("Got blob type '{}'", magic_enum::enum_name(res.blob.type));
+        ctx.log.debug("Got blob type '{}'", enum_name_or_value(res.blob.type));
 
         RData_AAAA aaaa {};
         RData_TXT txt;
@@ -364,9 +352,9 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
                 break;
             default:
                 // Skipped whole, so a CNAME ahead of the answer leaves the records after it readable.
-                ctx.log.debug("Skipping {} bytes of unimplemented resource record type {}", res.blob.rdlength, magic_enum::enum_name(res.blob.type));
+                ctx.log.debug("Skipping {} bytes of unimplemented resource record type {}", res.blob.rdlength, enum_name_or_value(res.blob.type));
                 if (is.ignore(res.blob.rdlength).gcount() != res.blob.rdlength) {
-                    ctx.log.debug("Premature EOF skipping {} record", magic_enum::enum_name(res.blob.type));
+                    ctx.log.debug("Premature EOF skipping {} record", enum_name_or_value(res.blob.type));
                     return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
                 }
                 break;

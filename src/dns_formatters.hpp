@@ -94,7 +94,7 @@ struct std::formatter<RData_OPT> {
         auto out_iter = ctx.out();
         for (auto option : p.options) {
             out_iter = format_to(out_iter, ", EDNS0_Option {{ OptionCode: {}, OptionDataSize: {}, Data: {{ 0x",
-                                 magic_enum::enum_name(option.blob.option_code), option.blob.data_size);
+                                 enum_name_or_value(option.blob.option_code), option.blob.data_size);
             for (auto c : option.data) {
                 out_iter = format_to(out_iter, "{:X}", c);
             }
@@ -116,7 +116,7 @@ struct std::formatter<DNSResourceRecord> {
             auto out_iter = format_to(ctx.out(),
                                       "DNSResourceRecord {{ Name: {}, Type: {}, Class: {}, TTL: {}, RDataLength: {}, "sv,
                                       rr.name,
-                                      magic_enum::enum_name(rr.blob.type),
+                                      enum_name_or_value(rr.blob.type),
                                       magic_enum::enum_name(rr.blob.query_class),
                                       rr.blob.ttl,
                                       rr.blob.rdlength);

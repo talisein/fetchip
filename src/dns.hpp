@@ -14,6 +14,15 @@ constexpr size_t DNSBufferSize { 1410 };
 
 using jump_table_t = std::map<uint16_t, std::string>;
 
+template <typename E>
+std::string enum_name_or_value(E value)
+{
+    if (auto name = magic_enum::enum_name(value); !name.empty()) {
+        return std::string(name);
+    }
+    return std::to_string(std::to_underlying(value));
+}
+
 enum DNSHeaderFlags : uint16_t {
     QueryResponse = 1 << 15,     // Query or Response (1 for response, 0 for query)
     OpCodeB3 = 1 << 14,          // Opcode
@@ -293,7 +302,6 @@ enum class DNSError
     SerializeStreamFailure,
     DeserializeUnexpectedException,
     DeserializeStreamFailure,
-    DeserializeUnimplementedQueryType,
     DeserializePrematureEOF,
     DNSHostToHostNullHostname,
     DNSHostToHostPrematureEOF,
