@@ -91,9 +91,10 @@ google, akahelp
 .B fetchip
 logs to the systemd journal; read it with
 .BR "journalctl \-t fetchip" .
+Debug messages are journaled only by a debug build.
 With
 .BR \-v ,
-the same messages are also written to standard error.
+every message, debug included, is also written to standard error.
 Option errors are always written to standard error.
 .SH EXIT STATUS
 .TP

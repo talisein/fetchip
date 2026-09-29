@@ -55,7 +55,7 @@ fetchip logs to the systemd journal:
 journalctl -t fetchip
 ```
 
-With `-v` it also writes the same messages to stderr. stdout carries only the address.
+Debug messages go to the journal only in a debug build (`meson setup --buildtype=debug`, Meson's default). With `-v`, fetchip also writes every message, debug included, to stderr. stdout carries only the address.
 
 ## Exit status
 

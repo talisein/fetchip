@@ -29,6 +29,10 @@ add_project_arguments('-DBOOST_UT_DISABLE_MODULE', language: 'cpp')
 # streams".
 add_project_arguments('-DBOOST_PFR_USE_CPP26=0', language: 'cpp')
 
+if get_option('buildtype') == 'debug'
+  add_project_arguments('-DFETCHIP_JOURNAL_DEBUG', language: 'cpp')
+endif
+
 deps = [cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, enum_dep, blobify_dep, pcg_dep]
 
 subdir('src')

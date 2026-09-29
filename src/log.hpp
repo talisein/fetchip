@@ -7,6 +7,13 @@
 
 namespace fip
 {
+    // Debug messages reach the journal only in meson's debug buildtype; -v
+    // still prints them to stderr in every build.
+#ifdef FETCHIP_JOURNAL_DEBUG
+    inline constexpr bool journal_debug = true;
+#else
+    inline constexpr bool journal_debug = false;
+#endif
 
     class logger {
     public:
@@ -47,7 +54,7 @@ namespace fip
         template <typename Format, typename... Params>
         constexpr void log(int priority, Format&& format, Params&&... params) const {
             auto msg = std::vformat(std::forward<Format>(format), std::make_format_args(params...));
-            if (!is_testing) {
+            if (!is_testing && (priority != LOG_DEBUG || journal_debug)) {
                 sd_journal_print(priority, msg.c_str());
             }
 
@@ -62,7 +69,7 @@ namespace fip
 
         template <typename Message>
         constexpr void log(int priority, Message&& msg) const {
-            if (!is_testing) {
+            if (!is_testing && (priority != LOG_DEBUG || journal_debug)) {
                 sd_journal_print(priority, msg);
             }
 
