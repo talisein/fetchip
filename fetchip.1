@@ -25,7 +25,12 @@ and
 nothing else is ever written to standard output.
 .PP
 It asks several public "what is my IP" services, drawn in random order a few at a time, and prints an address only when they agree.
-An address wins once at least two services report it and it holds a strict majority of the answers so far.
+An address wins once at least two services report it and it holds a strict majority of the answers so far in its family.
+IPv4 and IPv6 answers are tallied separately, so without
+.B \-4
+or
+.B \-6
+a dual-stack host prints whichever family's address wins first.
 When the remaining services can no longer produce a winner,
 .B fetchip
 exits with an error.
@@ -125,17 +130,5 @@ Ask one DNS service and watch what it does:
 fetchip \-v \-n quad9
 .fi
 .RE
-.SH BUGS
-On a dual-stack host without
-.B \-4
-or
-.BR \-6 ,
-IPv4 and IPv6 answers share one vote and can split evenly, so
-.B fetchip
-fails although every service answered.
-Pass
-.B \-4
-or
-.BR \-6 .
 .SH SEE ALSO
 .BR journalctl (1)

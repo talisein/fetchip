@@ -10,7 +10,7 @@ ip=$(fetchip -4) || exit 1
 
 ## How it works
 
-fetchip asks several public "what is my IP" services and prints an address only when they agree on it. Services are drawn in random order, a few at a time. An address wins once at least two services report it and it holds a strict majority of the answers so far. When the remaining services can no longer produce a winner, fetchip gives up and exits with an error.
+fetchip asks several public "what is my IP" services and prints an address only when they agree on it. Services are drawn in random order, a few at a time. An address wins once at least two services report it and it holds a strict majority of the answers so far in its family. IPv4 and IPv6 answers are tallied separately, so without `-4` or `-6` a dual-stack host prints whichever family's address wins first. When the remaining services can no longer produce a winner, fetchip gives up and exits with an error.
 
 It speaks HTTP, HTTPS and DNS itself, in one process, using Boost.Asio and Boost.Beast. It never forks curl, dig or a shell. Host names are looked up through systemd-resolved's Varlink interface rather than getaddrinfo, so the lookups time out and cancel like everything else. Every query has a timeout, and outstanding queries are cancelled as soon as the outcome is settled.
 
@@ -31,8 +31,6 @@ fetchip [-4 | -6] [-s TYPE] [-n NAME] [-i] [-v]
 | `-i`, `--insecure` | Use the plain HTTP endpoints instead of HTTPS |
 | `-v`, `--verbose` | Copy log messages to stderr |
 | `-h`, `--help` | Show help |
-
-On a dual-stack host, pass `-4` or `-6`. Without either, IPv4 and IPv6 answers share one vote and can split evenly; see [BUGS.md](BUGS.md).
 
 `fetchip --list type` and `fetchip --list name` print the values `-s` and `-n` accept. The bash completion uses them.
 
