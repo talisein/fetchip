@@ -237,7 +237,7 @@ RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexce
             option.blob = blob::load<DNSOptionBlob>(loader, blob::tag<fetchip_construction_policy>());
             auto input_range = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
             std::ranges::copy(input_range | std::views::take(option.blob.data_size), std::back_inserter(option.data));
-            if (option.blob.data_size < option.data.size()) {
+            if (option.data.size() < option.blob.data_size) {
                 ctx.log.debug("Premature EOF deserializing option {}. {} < {}",
                               magic_enum::enum_name(option.blob.option_code),
                               option.blob.data_size,
