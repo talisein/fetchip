@@ -29,6 +29,8 @@ enum class ServiceType {
 };
 
 struct Service {
+    // Shared by the HTTP and HTTPS entries for one provider; -i picks between them.
+    std::string_view name;
     std::string_view address;
     std::optional<std::string_view> path;
     std::optional<std::string_view> resolver;
@@ -36,29 +38,30 @@ struct Service {
     ServiceType type;
 };
 
-/*
-Candidates not yet in the list:
-    http://ipecho.net/plain
-    http://ident.me
-    https://myip.dnsomatic.com
-    https://checkip.amazonaws.com
-    http://whatismyip.akamai.com
-    https://myipv4.p1.opendns.com/get_my_ip
-    https://ipinfo.io/ip
-    https://api.ipify.org
-    http://checkip.dyndns.org
-    http://bot.whatismyipaddress.com
-    TXT whoami.ds.akahelp.net (also whoami.ipv4. / whoami.ipv6.akahelp.net)
-*/
 constexpr auto services = std::to_array<Service>({
-        {"http://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"https://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"http://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"https://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"myip.opendns.com", std::nullopt, "resolver1.opendns.com", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
-        {"whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", DNSProviderAcceptedQueryType::A_ONLY, ServiceType::DNS},
-        {"o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", DNSProviderAcceptedQueryType::TXT, ServiceType::DNS},
-        {"whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
+        {"ifconfig.me", "http://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"ifconfig.me", "https://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"icanhazip", "http://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"icanhazip", "https://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"ipecho", "http://ipecho.net", "/plain", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"ipecho", "https://ipecho.net", "/plain", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"ident.me", "http://ident.me", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"ident.me", "https://ident.me", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"dnsomatic", "http://myip.dnsomatic.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"dnsomatic", "https://myip.dnsomatic.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"amazon", "http://checkip.amazonaws.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"amazon", "https://checkip.amazonaws.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"akamai", "http://whatismyip.akamai.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"akamai", "https://whatismyip.akamai.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"ipinfo", "http://ipinfo.io", "/ip", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"ipinfo", "https://ipinfo.io", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"ipify", "http://api64.ipify.org", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
+        {"ipify", "https://api64.ipify.org", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
+        {"opendns", "myip.opendns.com", std::nullopt, "resolver1.opendns.com", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
+        {"akamai-dns", "whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", DNSProviderAcceptedQueryType::A_ONLY, ServiceType::DNS},
+        {"google", "o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", DNSProviderAcceptedQueryType::TXT, ServiceType::DNS},
+        {"quad9", "whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
+        {"akahelp", "whoami.ds.akahelp.net", std::nullopt, "a20-65.akam.net", DNSProviderAcceptedQueryType::TXT, ServiceType::DNS},
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.resolver.has_value(); else return true; }) );
@@ -106,6 +109,7 @@ int main(int argc, char* argv[]) {
     options.add_options()
         ("h,help", "Show help")
         ("s,service", "Service type (HTTP or DNS)", cxxopts::value<std::string>())
+        ("n,name", "Ask only the named service and print its answer, without consensus", cxxopts::value<std::string>())
         ("i,insecure", "Use HTTP instead of HTTPS", cxxopts::value<bool>()->default_value("false"))
         ("v,verbose", "Print verbose output to stderr")
         ("4", "Fetch the public IPv4 address")
@@ -136,6 +140,25 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        std::optional<std::string> selectedName;
+
+        if (result.count("name")) {
+            selectedName = result["name"].as<std::string>();
+            if (!std::ranges::contains(services, *selectedName, &Service::name)) {
+                std::cerr << std::format("Unknown service '{}'. Choose from ", *selectedName);
+                std::ranges::for_each(services
+                                      | std::views::transform(&Service::name)
+                                      | std::views::chunk_by(std::ranges::equal_to{})
+                                      | std::views::transform([](const auto& names) { return names.front(); })
+                                      | std::views::join_with(", "sv),
+                                      [](const auto &c) {
+                                          std::cerr << c;
+                                      });
+                std::cerr << "\n";
+                return EXIT_FAILURE;
+            }
+        }
+
         if (result.count("4") && result.count("6")) {
             std::cerr << "-4 and -6 are mutually exclusive\n";
             return EXIT_FAILURE;
@@ -160,6 +183,8 @@ int main(int argc, char* argv[]) {
             }
         }) | std::views::filter([family](const auto& service) {
             return !service.query_type || provider_supports(*service.query_type, family);
+        }) | std::views::filter([&selectedName](const auto& service) {
+            return !selectedName || service.name == *selectedName;
         });
         auto candidates = std::ranges::to<std::vector<Service>>(filteredServices);
         if (candidates.empty()) {
@@ -171,6 +196,27 @@ int main(int argc, char* argv[]) {
         ctx.requested_family = family;
         if (result.count("verbose")) {
             ctx.log.set_verbose(true);
+        }
+
+        // One service cannot reach consensus, so its answer stands on its own.
+        if (selectedName) {
+            const auto service = candidates.front();
+            std::optional<std::string> answer;
+            asio::co_spawn(ctx.io_context, query_public_ip(ctx, service),
+                           [&](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
+                               if (e) std::rethrow_exception(e);
+                               if (!result) {
+                                   ctx.log.error("{} failed: {}", service.address, result.error().message());
+                                   return;
+                               }
+                               answer = std::move(*result);
+                           });
+            ctx.io_context.run();
+            if (!answer) {
+                return EXIT_FAILURE;
+            }
+            std::cout << *answer << std::endl;
+            return 0;
         }
 
         // Services are drawn from the back, so each is asked at most once.
