@@ -1,4 +1,4 @@
-project('fetchip', 'cpp', version: '0.9.0', license: 'GPL-3.0-or-later', default_options : ['cpp_std=c++26'])
+project('fetchip', 'cpp', version: '0.9.0', license: 'GPL-3.0-or-later', default_options : ['cpp_std=c++26', 'b_ndebug=if-release'])
 
 cxxopts_dep = dependency('cxxopts',
                          fallback: ['cxxopts'])
