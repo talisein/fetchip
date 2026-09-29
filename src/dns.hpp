@@ -303,6 +303,7 @@ enum class DNSError
     DNSHostToHostExcessiveHostnameSize,
     DNSHostToHostNonnumericLabelSize,
     DNSHostToHostStreamUnexpectedException,
+    DNSHostToHostBadCompressionPointer,
     DNSResolverErrorResponse,
     DNSResolverNoAnswers,
     DNSResolverUnexpectedAnswer,

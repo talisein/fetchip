@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <expected>
+#include <optional>
 #include <source_location>
 #include <ranges>
 #include <iterator>
@@ -114,8 +115,12 @@ namespace {
         auto os_iter = std::ostreambuf_iterator(hostname);
         auto view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
         const uint16_t start_pos = is.tellg();
+        // Where the caller's parse continues: just past the first compression
+        // pointer, since a pointer ends the name on the wire.
+        std::optional<std::streampos> resume;
 
         do {
+            const auto label_pos = static_cast<uint16_t>(is.tellg());
             uint8_t label_size = 0;
             if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &label_size);
                 copy_result.out == &label_size)
@@ -127,6 +132,7 @@ namespace {
             if (0 == label_size) {
                 auto res = hostname.str();
                 if (0 < res.size()) res.pop_back(); // Remove trailing .
+                if (resume) is.seekg(*resume);
                 auto [it, _] = jump_table.emplace(start_pos, std::move(res));
                 return it->second;
             }
@@ -140,10 +146,26 @@ namespace {
                 }
 
                 auto jump = static_cast<uint16_t>((label_size & 0x3F) << 8) | next;
-                auto it = jump_table.find(jump);
-                if (it != jump_table.end()) {
-                    return it->second;
+                if (auto it = jump_table.find(jump); it != jump_table.end()) {
+                    // The accumulated prefix ends in '.'; the cached name has none.
+                    auto res = hostname.str() + it->second;
+                    if (0 < res.size() && '.' == res.back()) res.pop_back(); // Pointer to the root name
+
+                    if (resume) is.seekg(*resume);
+                    auto [res_it, _] = jump_table.emplace(start_pos, std::move(res));
+                    return res_it->second;
                 }
+
+                // A pointer may only reference a prior occurrence, so each jump
+                // moves strictly backward and a chain of them must terminate.
+                if (jump >= label_pos) {
+                    ctx.log.debug("Compression pointer at {} jumps forward to {}", label_pos, jump);
+                    return std::unexpected(make_error_code(DNSError::DNSHostToHostBadCompressionPointer));
+                }
+                if (!resume) resume = is.tellg();
+                is.seekg(jump);
+                view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
+                continue;
             }
 
             if (64 < label_size) {

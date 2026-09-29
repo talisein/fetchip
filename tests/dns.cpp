@@ -207,6 +207,37 @@ int main() {
          "x23456789012345678901234567890123456789012345678901234567890123.y23456789012345678901234567890123456789012345678901234567890123.z23456789012345678901234567890123456789012345678901234567890123.a23456789012345678901234567890123456789012345678901234567890123"sv}
     };
 
+    "question deserialize compressed"_test = [] (const auto &pair) {
+        const auto &[wire, hosts] = pair;
+        fip::context ctx(39, true);
+        std::ispanstream ss(wire);
+        jump_table_t jt;
+
+        for (const auto host : hosts) {
+            const auto result = DNSQuestion::deserialize(ctx, ss, jt);
+            expect(result.has_value()) << wire << host;
+            if (result.has_value()) {
+                expect(eq(result->qname, host)) << wire;
+                // The stream must resume just after the pointer for the blob to parse.
+                expect(result->blob.qtype == DNSQueryType::A) << wire;
+                expect(result->blob.qclass == DNSQueryClass::IN) << wire;
+            }
+        }
+    } | std::vector<std::pair<std::string_view, std::vector<std::string_view>>> {
+        // Pointer to a whole prior name.
+        {"\007example\003com\0\x00\x01\x00\x01\xC0\x00\x00\x01\x00\x01"sv,
+         {"example.com"sv, "example.com"sv}},
+        // Prefix label followed by a pointer to a whole prior name.
+        {"\007example\003com\0\x00\x01\x00\x01\004mail\xC0\x00\x00\x01\x00\x01"sv,
+         {"example.com"sv, "mail.example.com"sv}},
+        // Pointer into the middle of a prior name (suffix offset).
+        {"\003www\007example\003com\0\x00\x01\x00\x01\004mail\xC0\x04\x00\x01\x00\x01"sv,
+         {"www.example.com"sv, "mail.example.com"sv}},
+        // Chain: prefix, pointer to a name that itself ends in a pointer.
+        {"\007example\003com\0\x00\x01\x00\x01\003www\xC0\x00\x00\x01\x00\x01\004mail\xC0\x11\x00\x01\x00\x01"sv,
+         {"example.com"sv, "www.example.com"sv, "mail.www.example.com"sv}},
+    };
+
     "round trip query"_test = [](const auto& original_host) {
         fip::context ctx(true);
         DNSMessage message {ctx};
@@ -273,11 +304,18 @@ int main() {
         }
     } | std::vector<std::pair<std::string_view, DNSError>> {
         {"\x01\0\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
+        {"\xC0\x00\x00\x01\x00\x01"sv, DNSError::DNSHostToHostBadCompressionPointer},
+        {"\xC0\x10\x00\x01\x00\x01"sv, DNSError::DNSHostToHostBadCompressionPointer},
+        // Backward pointer into the middle of a label: byte 'a' reads as size 97.
+        {"\004mail\xC0\x02\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
+        // Backward pointer loop; the hostname size guard bounds it.
+        {"\004mail\xC0\x00\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
+        {"\xC0"sv, DNSError::DNSHostToHostPrematureEOF},
         {"\x6Fx2345678901\003com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {""sv, DNSError::DNSHostToHostPrematureEOF},
         {"\x01x\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
         {"\x41\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
-        {"\xFFx3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
+        {"\x7Fx3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077a23456789012345678901234567890123456789012345678901234567890123\077b23456789012345678901234567890123456789012345678901234567890123\003com\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x01x\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
