@@ -174,6 +174,17 @@ std::expected<void, std::error_code> print_line(std::string_view line)
     return std::unexpected(std::make_error_code(std::io_errc::stream));
 }
 
+void log_exception(fip::context& ctx, std::string_view who, std::exception_ptr e)
+{
+    try { std::rethrow_exception(e); }
+    catch (const std::exception& ex) {
+        ctx.log.error("{} failed: {}", who, ex.what());
+    }
+    catch (...) {
+        ctx.log.error("{} failed with an unknown exception", who);
+    }
+}
+
 int main(int argc, char* argv[]) {
     cxxopts::Options options("fetchip", "Retrieve public IP from random service");
     options.add_options()
@@ -311,7 +322,14 @@ int main(int argc, char* argv[]) {
             asio::co_spawn(ctx.io_context,
                            [&]() -> asio::awaitable<void> {
                                for (const auto& service : candidates) {
-                                   auto result = co_await query_public_ip(ctx, service);
+                                   // A thrown query is one lost entry, as in the consensus path.
+                                   std::expected<std::string, std::error_code> result;
+                                   try {
+                                       result = co_await query_public_ip(ctx, service);
+                                   } catch (...) {
+                                       log_exception(ctx, service.address, std::current_exception());
+                                       continue;
+                                   }
                                    if (!result) {
                                        ctx.log.error("{} failed: {}", service.address, result.error().message());
                                        continue;
@@ -329,13 +347,7 @@ int main(int argc, char* argv[]) {
                            },
                            [&](std::exception_ptr e) {
                                if (e) {
-                                   try { std::rethrow_exception(e); }
-                                   catch (const std::exception& ex) {
-                                       ctx.log.error("{} failed: {}", *selectedName, ex.what());
-                                   }
-                                   catch (...) {
-                                       ctx.log.error("{} failed with an unknown exception", *selectedName);
-                                   }
+                                   log_exception(ctx, *selectedName, e);
                                }
                            });
             ctx.io_context.run();
@@ -409,13 +421,7 @@ int main(int argc, char* argv[]) {
                                        }
                                        // One failed query is one lost vote, never the whole run.
                                        if (e) {
-                                           try { std::rethrow_exception(e); }
-                                           catch (const std::exception& ex) {
-                                               ctx.log.error("{} failed: {}", service.address, ex.what());
-                                           }
-                                           catch (...) {
-                                               ctx.log.error("{} failed with an unknown exception", service.address);
-                                           }
+                                           log_exception(ctx, service.address, e);
                                            self();
                                            return;
                                        }
