@@ -96,7 +96,7 @@ struct BlobLoader {
 
     void seek(std::ptrdiff_t num_bytes) {
         is.seekg(num_bytes, std::ios::cur);
-        if (is.bad()) {
+        if (is.fail()) {
             throw std::system_error(make_error_code(DNSError::DeserializeStreamFailure), "seekg()");
         }
     }
@@ -115,7 +115,7 @@ struct BlobStorer {
 
     void seek(std::ptrdiff_t num_bytes) {
         os.seekp(num_bytes, std::ios::cur);
-        if (os.bad()) {
+        if (os.fail()) {
             throw std::system_error(make_error_code(DNSError::SerializeStreamFailure), "seek()");
         }
     }

@@ -2,6 +2,7 @@
 #include <variant>
 #include <vector>
 #include <expected>
+#include <limits>
 #include <map>
 #include <ranges>
 #include <string_view>
@@ -299,12 +300,13 @@ struct DNSResourceRecord {
 enum class DNSError
 {
     BlobifyStore,
-    HostToDNSHostStreamFailure,
     HostToDNSHostExcessiveHostLabelSize,
     HostToDNSHostExcessiveHostnameSize,
     HostToDNSHostEmptyLabel,
     SerializeUnexpectedException,
     SerializeStreamFailure,
+    SerializeExcessiveTextSize,
+    SerializeUnimplementedType,
     DeserializeUnexpectedException,
     DeserializeStreamFailure,
     DeserializePrematureEOF,
@@ -333,6 +335,8 @@ constexpr size_t max_label_octets { 63 };
 constexpr size_t max_name_octets { 255 };
 // Each dot in the text stands for a length octet; the first label's length octet and the terminating zero have none.
 constexpr size_t max_name_text { max_name_octets - 2 };
+// RFC 1035 §3.3: a <character-string> is one length octet followed by that many octets.
+constexpr size_t max_character_string_octets { std::numeric_limits<uint8_t>::max() };
 
 [[nodiscard]] constexpr std::expected<void, std::error_code>
 validate_dns_name(std::string_view name) noexcept

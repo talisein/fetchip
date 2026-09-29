@@ -122,7 +122,12 @@ int main() {
         expect(!result.has_value());
         expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
-        {"10tenletters10tenletters10tenletters3com"sv, DNSError::HostToDNSHostStreamFailure},
+        // A 40-octet label overflows the buffer mid-label.
+        {"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"sv, DNSError::SerializeStreamFailure},
+        // A 19-octet label fills the buffer, so the next length octet is the short write.
+        {"abcdefghijklmnopqrs.com"sv, DNSError::SerializeStreamFailure},
+        // Likewise the terminating zero.
+        {"abcdefghijklmnopqrs"sv, DNSError::SerializeStreamFailure},
     };
 
     "question serialization empty labels"_test = [] (const auto &host) {
@@ -501,9 +506,10 @@ int main() {
         expect(eq("DNSMessage { DNSHeader { ID: 0x3596, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 0 }, DNSQuestion { Name: miku.cute, Type: A, Class: IN }, DNSResourceRecord { Name: miku.cute, Type: A, Class: IN, TTL: 60, RDataLength: 4, RData_A { ipv4_address: 39.39.39.39 } } }"sv, std::format("{}", deserialized.value())));
     };
 
+    static constexpr auto dig_write = "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374/\340\7]"sv;
+
     "dig write"_test = [] {
-        constexpr auto buf ="\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374/\340\7]"sv;
-        std::ispanstream ss {buf};
+        std::ispanstream ss {dig_write};
         fip::context ctx(39, true);
         ctx.log.set_verbose(true);
 
@@ -515,6 +521,19 @@ int main() {
             expect(eq("meow!"sv, message.error().message()));
         }
 
+    };
+
+    "dig write round trip"_test = [] {
+        std::ispanstream in {dig_write};
+        fip::context ctx(39, true);
+
+        auto message = DNSMessage::deserialize(ctx, in);
+        expect(fatal(message.has_value()));
+        std::array<char, DNSBufferSize> buf;
+        std::ospanstream out {buf};
+        expect(message->serialize(out).has_value());
+        // The capture has no compression pointers, so its OPT record must come back octet for octet.
+        expect(eq(dig_write, std::string_view(out.span())));
     };
 
     "dig read"_test = [] {
@@ -623,6 +642,106 @@ int main() {
         {std::format("e{}", max_label_name), DNSError::HostToDNSHostExcessiveHostLabelSize},
         // 254 text characters, a 256-octet name.
         {std::format("{}x", max_name_name), DNSError::HostToDNSHostExcessiveHostnameSize},
+    };
+
+    "serialize unimplemented record types"_test = [] (const auto& unimplemented) {
+        const auto& [type, rdata] = unimplemented;
+        fip::context ctx(39, true);
+        DNSResourceRecord record { "miku.cute", { type, DNSQueryClass::IN, 60, 0 }, rdata };
+        std::array<char, 100> buf;
+        std::ospanstream ss(buf);
+
+        const auto serialized = record.serialize(ctx, ss);
+        expect(!serialized.has_value()) << enum_name_or_value(type);
+        if (!serialized) {
+            expect(eq(serialized.error(), DNSError::SerializeUnimplementedType)) << enum_name_or_value(type);
+        }
+        // Refused before the name, so no header claims rdata that never follows.
+        expect(ss.span().empty()) << enum_name_or_value(type);
+    } | std::vector<std::pair<DNSQueryType, DNSResourceRecord::RDataVariant_t>> {
+        {DNSQueryType::NS, RData_NS {"ns.miku.cute"}},
+        {DNSQueryType::CNAME, RData_CNAME {"miku.cute"}},
+        {DNSQueryType::MX, RData_MX {10, "mail.miku.cute"}},
+        {DNSQueryType::SRV, RData_SRV {0, 0, 53, "miku.cute"}},
+        // RRSIG, which deserialize skips.
+        {static_cast<DNSQueryType>(46), RData_A {}},
+    };
+
+    "serialize txt string at size limit"_test = [] {
+        fip::context ctx(39, true);
+        // The limit is spelled out, not taken from the constant under test.
+        const std::string longest(255, 'x');
+        DNSMessage message {ctx};
+        message.add_answer(DNSResourceRecord { "miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 256 }, RData_TXT { {longest} } });
+        std::array<char, DNSBufferSize> buf;
+        std::spanstream ss(buf);
+
+        expect(message.serialize(ss).has_value());
+        auto deserialized = DNSMessage::deserialize(ctx, ss);
+        expect(deserialized.has_value());
+        if (deserialized) {
+            expect(std::get<RData_TXT>(deserialized->get_answers().front().rdata).strings == std::vector {longest});
+        }
+    };
+
+    "serialize txt string past size limit"_test = [] (const auto& strings) {
+        fip::context ctx(39, true);
+        DNSResourceRecord record { "miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 0 }, RData_TXT { strings } };
+        std::array<char, DNSBufferSize> buf;
+        std::ospanstream ss(buf);
+
+        const auto serialized = record.serialize(ctx, ss);
+        expect(!serialized.has_value());
+        if (!serialized) {
+            expect(eq(serialized.error(), DNSError::SerializeExcessiveTextSize));
+        }
+        // Refused before the name, so not even the strings ahead of the long one reach the wire.
+        expect(ss.span().empty());
+    } | std::vector<std::vector<std::string>> {
+        {std::string(256, 'x')},
+        {"198.51.100.39"s, std::string(256, 'x')},
+    };
+
+    "record serialization short writes"_test = [] (const auto& record) {
+        fip::context ctx(39, true);
+        // Room for the name and header, but not for all of the rdata.
+        std::array<char, 24> buf;
+        std::ospanstream ss(buf);
+
+        const auto serialized = record.serialize(ctx, ss);
+        expect(!serialized.has_value()) << enum_name_or_value(record.blob.type);
+        if (!serialized) {
+            expect(eq(serialized.error(), DNSError::SerializeStreamFailure)) << enum_name_or_value(record.blob.type);
+        }
+    } | std::vector<DNSResourceRecord> {
+        {"miku.cute", { DNSQueryType::AAAA, DNSQueryClass::IN, 60, 16 }, RData_AAAA {}},
+        {"miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 14 }, RData_TXT { {"198.51.100.39"} }},
+        {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 20 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 16 }, std::vector<uint8_t>(16) } } }},
+    };
+
+    // blobify seeks only inside lens_load and lens_store, which fetchip does not call, so no deserialize path reaches these.
+    "blob seek past the stream"_test = [] (const auto& seek) {
+        const auto& [offset, load_error, store_error] = seek;
+        std::array<char, 4> buf {};
+        std::ispanstream is {buf};
+        std::ospanstream os {buf};
+        BlobLoader loader {is};
+        BlobStorer storer {os};
+        const auto thrown = [](auto&& f) -> std::error_code {
+            try {
+                f();
+            } catch (const std::system_error& e) {
+                return e.code();
+            }
+            return {};
+        };
+
+        expect(eq(thrown([&] { loader.seek(offset); }), load_error)) << offset;
+        expect(eq(thrown([&] { storer.seek(offset); }), store_error)) << offset;
+    } | std::vector<std::tuple<std::ptrdiff_t, std::error_code, std::error_code>> {
+        {4, {}, {}},
+        {5, make_error_code(DNSError::DeserializeStreamFailure), make_error_code(DNSError::SerializeStreamFailure)},
+        {-1, make_error_code(DNSError::DeserializeStreamFailure), make_error_code(DNSError::SerializeStreamFailure)},
     };
 
     "edns nonzero ttl"_test = [] {

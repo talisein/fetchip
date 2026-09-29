@@ -85,9 +85,7 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
         co_return std::unexpected(serialized.error());
     }
 
-    // TODO: safe signed->unsigned cast
-    asio::const_buffer b{buf.data(), static_cast<size_t>(ss.tellp())};
-    auto [ec, bytes_sent] = co_await sock.async_send(b, asio::as_tuple(asio::use_awaitable));
+    auto [ec, bytes_sent] = co_await sock.async_send(asio::buffer(ss.span()), asio::as_tuple(asio::use_awaitable));
 
     if (ec != boost::system::error_code {}) {
         ctx.log.debug("Failed to send DNS query: {}", ec.message());
