@@ -10,6 +10,9 @@ test('consensus', consensus_exe)
 name_resolver_exe = executable('name-resolver-test', 'name_resolver.cpp', dependencies: [fetchip_deps, ut_dep])
 test('name-resolver', name_resolver_exe)
 
+log_exe = executable('log-test', 'log.cpp', dependencies: [fetchip_deps, ut_dep])
+test('log', log_exe)
+
 dns_afl_exe = executable('dns-afl', 'dns_afl.cpp', dependencies: [fetchip_deps, ut_dep])
 test('dns-fuzz', dns_afl_exe)
 

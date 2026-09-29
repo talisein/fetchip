@@ -53,8 +53,12 @@ namespace fip
 
         template <typename Format, typename... Params>
         constexpr void log(int priority, Format&& format, Params&&... params) const {
+            if (!journals(priority) && !is_verbose && !hook_print) {
+                return;
+            }
+
             auto msg = std::vformat(std::forward<Format>(format), std::make_format_args(params...));
-            if (!is_testing && (priority != LOG_DEBUG || journal_debug)) {
+            if (journals(priority)) {
                 sd_journal_print(priority, "%s", msg.c_str());
             }
 
@@ -69,7 +73,7 @@ namespace fip
 
         template <typename Message>
         constexpr void log(int priority, Message&& msg) const {
-            if (!is_testing && (priority != LOG_DEBUG || journal_debug)) {
+            if (journals(priority)) {
                 sd_journal_print(priority, "%s", msg);
             }
 
@@ -111,6 +115,10 @@ namespace fip
         std::function<void (const std::string_view&)> hook_perror;
 
     private:
+        bool journals(int priority) const {
+            return !is_testing && (priority != LOG_DEBUG || journal_debug);
+        }
+
         bool is_verbose;
         bool is_testing;
     };
