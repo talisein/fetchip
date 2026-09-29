@@ -24,6 +24,11 @@ ut_dep = dependency('ut',
 
 add_project_arguments('-DBOOST_UT_DISABLE_MODULE', language: 'cpp')
 
+# PFR's C++26 path uses structured binding packs, which GCC 16.2 cannot
+# stream under -flto: "tree code 'decltype_type' is not supported in LTO
+# streams".
+add_project_arguments('-DBOOST_PFR_USE_CPP26=0', language: 'cpp')
+
 deps = [cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, enum_dep, blobify_dep, pcg_dep]
 
 subdir('src')
