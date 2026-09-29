@@ -1,4 +1,4 @@
-project('fetchip', 'cpp', default_options : ['cpp_std=c++26'])
+project('fetchip', 'cpp', version: '0.9.0', license: 'GPL-3.0-or-later', default_options : ['cpp_std=c++26'])
 
 cxxopts_dep = dependency('cxxopts',
                          fallback: ['cxxopts'])
@@ -6,10 +6,16 @@ cxxopts_dep = dependency('cxxopts',
 sdjournal_dep = dependency('libsystemd')
 boost_dep = dependency('boost', modules: ['system'], version: '>=1.86')
 openssl_dep = dependency('openssl', version: '>=3.0.0')
-enum_dep = dependency('magic_enum', fallback: ['magic_enum'])
-pfr_dep = dependency('PFR', fallback: ['PFR'])
+enum_dep = dependency('magic_enum', version: '>=0.9.6', fallback: ['magic_enum'])
 blobify_dep = dependency('blobify', fallback: ['blobify'])
-pcg_dep = dependency('pcg', fallback: ['pcg', 'pcg_cpp_dep'])
+
+# Fedora's pcg-cpp-devel installs the headers with no pkg-config file.
+cpp = meson.get_compiler('cpp')
+if cpp.has_header('pcg_random.hpp')
+  pcg_dep = declare_dependency()
+else
+  pcg_dep = dependency('pcg', fallback: ['pcg', 'pcg_cpp_dep'])
+endif
 
 ut_dep = dependency('ut',
                     method: 'cmake',
@@ -18,7 +24,7 @@ ut_dep = dependency('ut',
 
 add_project_arguments('-DBOOST_UT_DISABLE_MODULE', language: 'cpp')
 
-deps = [cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, blobify_dep, pcg_dep]
+deps = [cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, enum_dep, blobify_dep, pcg_dep]
 
 subdir('src')
 subdir('tests')
