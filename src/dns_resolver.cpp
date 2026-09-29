@@ -131,8 +131,11 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamil
         if (ec == asio::error::operation_aborted && cancelled == asio::cancellation_type::none) {
             ctx.log.debug("No response from {} within {}", sock.remote_endpoint(ec).address().to_string(), fip::dns_resolution_timeout);
             result = std::make_error_code(std::errc::timed_out);
-        } else {
+        } else if (ec) {
             ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
+        } else {
+            ctx.log.debug("Got an empty UDP response");
+            result = make_error_code(DNSError::DNSResolverEmptyResponse);
         }
         boost::system::error_code close_ec;
         sock.close(close_ec);
@@ -169,6 +172,14 @@ DNSResolver::parse_dns_response(std::span<const char> response, fip::AddressFami
     if (answers.size() == 0) {
         ctx.log.debug("Bailing due to zero answers");
         return std::unexpected(make_error_code(DNSError::DNSResolverNoAnswers));
+    }
+    // Other record types, such as a CNAME ahead of the answer, carry no address and their rdata is left unparsed.
+    auto answer = std::ranges::find_if(answers, [](const auto& rr) {
+        return rr.blob.type == DNSQueryType::A || rr.blob.type == DNSQueryType::AAAA || rr.blob.type == DNSQueryType::TXT;
+    });
+    if (answer == answers.end()) {
+        ctx.log.debug("Bailing because no answer is an A, AAAA or TXT record");
+        return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
     }
 
     // TODO: refactor to propagate error types and not use char*
@@ -215,7 +226,7 @@ DNSResolver::parse_dns_response(std::span<const char> response, fip::AddressFami
                    [&](const auto& unknown) {
                        ctx.log.debug("Unknown RData in variant?! {}", typeid(unknown).name());
                    }
-               }, answers[0].rdata);
+               }, answer->rdata);
     if (nullptr == res) {
         ctx.log.debug("Bailing because we couldn't populate the result string");
         return std::unexpected(make_error_code(failure));

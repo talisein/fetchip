@@ -526,6 +526,7 @@ int main() {
         "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\16\015198.51.100"sv,
         "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\0"sv,
         "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\16\2ns\015198.51.100"sv,
+        "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\5\0\1\0\0\0<\0\4\1x"sv,
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\1\0\1\0\0\0\0\0\5HnPY!"sv,
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\4HnPY"sv,
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\0210123456789abcdefg"sv,
@@ -560,6 +561,20 @@ int main() {
         }
         expect(resolver.parse_dns_response(tagged, fip::AddressFamily::V6) == std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily)));
         expect(resolver.parse_dns_response(untagged, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+    };
+
+    "parse answer after cname"_test = [] {
+        constexpr auto buf = "\314\347\204\0\0\1\0\2\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\5\0\1\0\0\0<\0\4\1x\300\14\300\14\0\20\0\1\0\0\0<\0\16\015198.51.100.39"sv;
+        constexpr auto cname_only = "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\5\0\1\0\0\0<\0\4\1x\300\14"sv;
+        fip::context ctx(39, true);
+        DNSResolver resolver {ctx};
+
+        auto address = resolver.parse_dns_response(buf, fip::AddressFamily::V4);
+        expect(address.has_value());
+        if (address) {
+            expect(eq("198.51.100.39"sv, *address));
+        }
+        expect(resolver.parse_dns_response(cname_only, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
     "query type for transport"_test = [] {

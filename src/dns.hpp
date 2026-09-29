@@ -307,6 +307,7 @@ enum class DNSError
     DNSResolverNoAnswers,
     DNSResolverUnexpectedAnswer,
     DNSResolverWrongFamily,
+    DNSResolverEmptyResponse,
 };
 
 namespace std

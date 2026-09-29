@@ -351,7 +351,12 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
                 }
                 break;
             default:
-                ctx.log.debug("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(res.blob.type));
+                // Skipped whole, so a CNAME ahead of the answer leaves the records after it readable.
+                ctx.log.debug("Skipping {} bytes of unimplemented resource record type {}", res.blob.rdlength, magic_enum::enum_name(res.blob.type));
+                if (is.ignore(res.blob.rdlength).gcount() != res.blob.rdlength) {
+                    ctx.log.debug("Premature EOF skipping {} record", magic_enum::enum_name(res.blob.type));
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
                 break;
         }
 
