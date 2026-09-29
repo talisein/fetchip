@@ -28,7 +28,7 @@ namespace fip
             }
 
             if (is_verbose) {
-                perror(msg.c_str());
+                ::perror(msg.c_str());
             }
 
             if (hook_perror) {
@@ -43,7 +43,7 @@ namespace fip
             }
 
             if (is_verbose) {
-                perror(msg);
+                ::perror(msg);
             }
 
             if (hook_perror) {
