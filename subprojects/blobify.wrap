@@ -1,6 +1,6 @@
 [wrap-git]
 directory = blobify
-url = https://git.miku/talisein/blobify.git
+url = https://github.com/talisein/blobify.git
 revision = 0b8f3214fe20994abcc5fe59bdd38510f77fd9b3
 depth = 1
 
