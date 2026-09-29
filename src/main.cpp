@@ -263,24 +263,39 @@ int main(int argc, char* argv[]) {
         }
 
         // One service cannot reach consensus, so its answer stands on its own.
+        // A name can have several entries (say, DNS_A and DNS_AAAA); try each
+        // in turn and print the first answer.
         if (selectedName) {
-            const auto service = candidates.front();
             std::optional<std::string> answer;
-            asio::co_spawn(ctx.io_context, query_public_ip(ctx, service),
-                           [&](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
-                               if (e) std::rethrow_exception(e);
-                               if (!result) {
-                                   ctx.log.error("{} failed: {}", service.address, result.error().message());
-                                   return;
+            asio::co_spawn(ctx.io_context,
+                           [&]() -> asio::awaitable<void> {
+                               for (const auto& service : candidates) {
+                                   auto result = co_await query_public_ip(ctx, service);
+                                   if (!result) {
+                                       ctx.log.error("{} failed: {}", service.address, result.error().message());
+                                       continue;
+                                   }
+                                   // Canonical text, as the consensus path prints.
+                                   boost::system::error_code ec;
+                                   auto address = asio::ip::make_address(*result, ec);
+                                   if (ec) {
+                                       ctx.log.error("{} did not answer with an address: {}", service.address, *result);
+                                       continue;
+                                   }
+                                   answer = address.to_string();
+                                   co_return;
                                }
-                               // Canonical text, as the consensus path prints.
-                               boost::system::error_code ec;
-                               auto address = asio::ip::make_address(*result, ec);
-                               if (ec) {
-                                   ctx.log.error("{} did not answer with an address: {}", service.address, *result);
-                                   return;
+                           },
+                           [&](std::exception_ptr e) {
+                               if (e) {
+                                   try { std::rethrow_exception(e); }
+                                   catch (const std::exception& ex) {
+                                       ctx.log.error("{} failed: {}", *selectedName, ex.what());
+                                   }
+                                   catch (...) {
+                                       ctx.log.error("{} failed with an unknown exception", *selectedName);
+                                   }
                                }
-                               answer = address.to_string();
                            });
             ctx.io_context.run();
             if (!answer) {
@@ -333,7 +348,18 @@ int main(int argc, char* argv[]) {
                                    if (settled) {
                                        return;
                                    }
-                                   if (e) std::rethrow_exception(e);
+                                   // One failed query is one lost vote, never the whole run.
+                                   if (e) {
+                                       try { std::rethrow_exception(e); }
+                                       catch (const std::exception& ex) {
+                                           ctx.log.error("{} failed: {}", service.address, ex.what());
+                                       }
+                                       catch (...) {
+                                           ctx.log.error("{} failed with an unknown exception", service.address);
+                                       }
+                                       self();
+                                       return;
+                                   }
                                    if (result && !consensus.record(*result)) {
                                        ctx.log.debug("{} did not answer with an address: {}", service.address, *result);
                                    }

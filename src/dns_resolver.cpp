@@ -52,27 +52,26 @@ DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
 
     boost::system::error_code ec;
     ctx.log.debug("Connecting to {} port {}", ep.address().to_string(), ep.port());
-    if (ep.address().is_v4()) {
-        udp::socket s(ctx.io_context, udp::endpoint(udp::v4(), 0));
-        s.connect(ep, ec);
-        if (ec) {
-            ctx.log.debug("udp connection failure: {}", ec.message());
-            return std::unexpected(ec);
-        }
-        ctx.log.debug("Connected to {}", ep.address().to_string());
-        return s;
-    } else if (ep.address().is_v6()) {
-        udp::socket s(ctx.io_context, udp::endpoint(udp::v6(), 0));
-        s.connect(ep, ec);
-        if (ec) {
-            ctx.log.debug("udp connection failure: {}", ec.message());
-            return std::unexpected(ec);
-        }
-        return s;
+    if (!ep.address().is_v4() && !ep.address().is_v6()) {
+        ctx.log.debug("Trying to connect to socket to unexpected family {}", ep.address().to_string());
+        return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
     }
 
-    ctx.log.debug("Trying to connect to socket to unexpected family {}", ep.address().to_string());
-    return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
+    // Open with an error_code: a host without IPv6 refuses the v6 socket
+    // outright, and that must fail this one query, not throw.
+    udp::socket s(ctx.io_context);
+    s.open(ep.address().is_v4() ? udp::v4() : udp::v6(), ec);
+    if (ec) {
+        ctx.log.debug("udp socket open failure: {}", ec.message());
+        return std::unexpected(ec);
+    }
+    s.connect(ep, ec);
+    if (ec) {
+        ctx.log.debug("udp connection failure: {}", ec.message());
+        return std::unexpected(ec);
+    }
+    ctx.log.debug("Connected to {}", ep.address().to_string());
+    return s;
 }
 
 asio::awaitable<std::expected<void, std::error_code>>
