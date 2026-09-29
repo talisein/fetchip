@@ -13,6 +13,9 @@ test('name-resolver', name_resolver_exe)
 log_exe = executable('log-test', 'log.cpp', dependencies: [fetchip_deps, ut_dep])
 test('log', log_exe)
 
+error_category_exe = executable('error-category-test', 'error_category.cpp', dependencies: [fetchip_deps, ut_dep])
+test('error-category', error_category_exe)
+
 dns_afl_exe = executable('dns-afl', 'dns_afl.cpp', dependencies: [fetchip_deps, ut_dep])
 test('dns-fuzz', dns_afl_exe)
 

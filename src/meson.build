@@ -6,9 +6,7 @@ lib_srcs = [
   'consensus.cpp',
   'dns.cpp',
   'dns_resolver.cpp',
-  'fetch_error.cpp',
   'http_client.cpp',
-  'http_error.cpp',
   'name_resolver.cpp',
 ]
 

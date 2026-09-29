@@ -8,6 +8,7 @@
 #include <magic_enum/magic_enum.hpp>
 #include <magic_enum/magic_enum_flags.hpp>
 #include "context.hpp"
+#include "error_category.hpp"
 #include <blobify/blobify.hpp>
 
 constexpr size_t DNSBufferSize { 1410 };
@@ -322,34 +323,10 @@ enum class DNSError
 
 namespace std
 {
-  template <> struct is_error_code_enum<DNSError> : true_type
+  template <> struct is_error_code_enum<DNSError> : fip::fip_error_code
   {
   };
 }
-
-namespace detail
-{
-    class DNSError_category : public std::error_category
-    {
-    public:
-        virtual const char *name() const noexcept override final { return "DNSError"; }
-        virtual std::string message(int c) const override final
-        {
-            using namespace std::string_view_literals;
-            return std::string(magic_enum::enum_cast<DNSError>(c).
-                               transform(&magic_enum::enum_name<DNSError>).
-                               value_or("Unknown DNSError"sv));
-        }
-
-        virtual std::error_condition default_error_condition(int c) const noexcept override final
-        {
-            return std::error_condition(c, *this);
-        }
-    };
-}
-
-const detail::DNSError_category& DNSError_category();
-std::error_code make_error_code(DNSError e);
 
 class DNSMessage
 {

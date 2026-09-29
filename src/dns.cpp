@@ -170,18 +170,6 @@ namespace {
     }
 }
 
-
-const detail::DNSError_category& DNSError_category()
-{
-  static detail::DNSError_category c;
-  return c;
-}
-
-std::error_code make_error_code(DNSError e)
-{
-    return {magic_enum::enum_integer(e), DNSError_category()};
-}
-
 DNSMessage::DNSMessage(fip::context& ctx) noexcept :
     header(),
     ctx(ctx)
