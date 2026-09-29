@@ -4,6 +4,7 @@
 #include <source_location>
 #include <ranges>
 #include <iterator>
+#include <spanstream>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -209,26 +210,36 @@ RData_OPT::serialize(fip::context& ctx, std::ostream &os) const noexcept
 std::expected<RData_OPT, std::error_code>
 RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexcept
 {
-    BlobLoader loader(is);
-
     try {
+        // Options are parsed from the rdata alone, so no option can reach the records after it.
+        std::vector<char> rdata;
+        std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(rdlen), std::back_inserter(rdata));
+        if (rdata.size() != rdlen) {
+            ctx.log.debug("Premature EOF deserializing OPT record. {} < {}", rdata.size(), rdlen);
+            return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+        }
+
+        std::ispanstream rdata_stream {rdata};
+        BlobLoader loader(rdata_stream);
         RData_OPT res {};
-        const auto rdata_begin_pos = is.tellg();
-        for (auto rdata_read = is.tellg() - rdata_begin_pos;
-             std::cmp_less(rdata_read, rdlen);
-             rdata_read = is.tellg() - rdata_begin_pos)
-        {
+        auto rdata_left = rdata.size();
+        while (rdata_left > 0) {
+            if (rdata_left < sizeof(DNSOptionBlob)) {
+                ctx.log.debug("Option header overruns the {} bytes of rdata left", rdata_left);
+                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+            }
             DNSOption option {};
             option.blob = blob::load<DNSOptionBlob>(loader, blob::tag<fetchip_construction_policy>());
-            auto input_range = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
+            auto input_range = std::ranges::subrange(std::istreambuf_iterator(rdata_stream), std::istreambuf_iterator<char>());
             std::ranges::copy(input_range | std::views::take(option.blob.data_size), std::back_inserter(option.data));
             if (option.data.size() < option.blob.data_size) {
-                ctx.log.debug("Premature EOF deserializing option {}. {} < {}",
+                ctx.log.debug("Option {} data size {} overruns the {} bytes of rdata left",
                               enum_name_or_value(option.blob.option_code),
                               option.blob.data_size,
                               option.data.size());
                 return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
             }
+            rdata_left -= sizeof(DNSOptionBlob) + option.data.size();
             res.options.push_back(std::move(option));
         }
 

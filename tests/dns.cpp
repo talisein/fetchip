@@ -665,6 +665,10 @@ int main() {
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\34\0\1\0\0\0\0\0\20HnPY"sv,
         // OPT option claiming 8 data bytes with only 4 left in the message.
         "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374"sv,
+        // OPT option claiming 8 data bytes with only 7 left in an rdlength of 11.
+        "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\13\0\n\0\10\31\304\336\374/\340u\35"sv,
+        // OPT option header straddling an rdlength of 2.
+        "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\2\0\n\0\10\31\304\336\374/\340u\35"sv,
         // RRSIG claiming 8 rdata bytes with only 3 left in the message.
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\56\0\1\0\0\0\0\0\10abc"sv,
     };
