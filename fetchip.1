@@ -1,0 +1,134 @@
+.TH FETCHIP 1 2026-09-28 fetchip "User Commands"
+.SH NAME
+fetchip \- reliable, non-forking public IP lookup
+.SH SYNOPSIS
+.B fetchip
+.RB [ \-4 | \-6 ]
+.RB [ \-s
+.IR type ]
+.RB [ \-n
+.IR name ]
+.RB [ \-i ]
+.RB [ \-v ]
+.br
+.B fetchip
+.B \-\-list
+.BR type | name
+.SH DESCRIPTION
+.B fetchip
+writes the host's public IP address to standard output, or exits with an error.
+The address is always valid and in canonical form.
+Apart from the output of
+.B \-\-help
+and
+.BR \-\-list ,
+nothing else is ever written to standard output.
+.PP
+It asks several public "what is my IP" services, drawn in random order a few at a time, and prints an address only when they agree.
+An address wins once at least two services report it and it holds a strict majority of the answers so far.
+When the remaining services can no longer produce a winner,
+.B fetchip
+exits with an error.
+.PP
+.B fetchip
+speaks HTTP, HTTPS and DNS itself, in one process; it never runs another program.
+Every query has a timeout, and outstanding queries are cancelled once the outcome is settled.
+DNS services are queried at the provider's authoritative server, not through the system resolver.
+.SH OPTIONS
+.TP
+.B \-4
+Fetch the public IPv4 address.
+.TP
+.B \-6
+Fetch the public IPv6 address.
+.TP
+.BI \-s " type" "\fR, \fP\-\-service=" type
+Ask only services of one type:
+.BR HTTP ,
+.BR HTTPS ,
+.BR DNS ,
+.BR DNS_A ,
+.B DNS_AAAA
+or
+.BR DNS_TXT .
+.B DNS
+selects all three DNS types.
+The type is not case sensitive.
+.TP
+.BI \-n " name" "\fR, \fP\-\-name=" name
+Ask only the named service and print its answer, without consensus.
+.TP
+.BR \-i ", " \-\-insecure
+Use the plain HTTP endpoints instead of HTTPS.
+.TP
+.BR \-v ", " \-\-verbose
+Copy log messages to standard error.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.TP
+.BR \-\-list " " type | name
+Print the values
+.B \-s
+or
+.B \-n
+accepts, one per line.
+The bash completion uses this.
+.SH SERVICES
+.TP
+.B HTTP and HTTPS
+ifconfig.me, icanhazip, ipecho, ident.me, dnsomatic, amazon, akamai, ipinfo, ipify
+.TP
+.B DNS_A and DNS_AAAA
+opendns, quad9
+.TP
+.B DNS_A
+akamai-dns
+.TP
+.B DNS_TXT
+google, akahelp
+.SH LOGGING
+.B fetchip
+logs to the systemd journal; read it with
+.BR "journalctl \-t fetchip" .
+With
+.BR \-v ,
+the same messages are also written to standard error.
+Option errors are always written to standard error.
+.SH EXIT STATUS
+.TP
+.B 0
+An address was written to standard output.
+.TP
+.B 1
+Nothing was written to standard output.
+.SH EXAMPLES
+Use the address in a script:
+.PP
+.RS
+.nf
+ip=$(fetchip \-4) || exit 1
+.fi
+.RE
+.PP
+Ask one DNS service and watch what it does:
+.PP
+.RS
+.nf
+fetchip \-v \-n quad9
+.fi
+.RE
+.SH BUGS
+On a dual-stack host without
+.B \-4
+or
+.BR \-6 ,
+IPv4 and IPv6 answers share one vote and can split evenly, so
+.B fetchip
+fails although every service answered.
+Pass
+.B \-4
+or
+.BR \-6 .
+.SH SEE ALSO
+.BR journalctl (1)
