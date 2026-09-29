@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cerrno>
 #include <cstring>
 #include <netdb.h>
 #include <array>
@@ -151,6 +152,20 @@ boost::system::error_code connect_resolved(asio::io_context& io)
     return ec;
 }
 
+std::expected<void, std::error_code> print_line(std::string_view line)
+{
+    errno = 0;
+    std::cout << line << '\n' << std::flush;
+    if (std::cout) {
+        return {};
+    }
+    // std::cout's buffer writes through fflush or write(2), which set errno when they fail.
+    if (const auto err = errno; err != 0) {
+        return std::unexpected(std::error_code(err, std::generic_category()));
+    }
+    return std::unexpected(std::make_error_code(std::io_errc::stream));
+}
+
 int main(int argc, char* argv[]) {
     cxxopts::Options options("fetchip", "Retrieve public IP from random service");
     options.add_options()
@@ -171,7 +186,9 @@ int main(int argc, char* argv[]) {
         auto result = options.parse(argc, argv);
 
         if (result.count("help")) {
-            std::cout << options.help({""}) << std::endl;
+            if (!print_line(options.help({""}))) {
+                return EXIT_FAILURE;
+            }
             return 0;
         }
 
@@ -187,7 +204,9 @@ int main(int argc, char* argv[]) {
                 return EXIT_FAILURE;
             }
             for (const auto value : values) {
-                std::cout << value << "\n";
+                if (!print_line(value)) {
+                    return EXIT_FAILURE;
+                }
             }
             return 0;
         }
@@ -316,7 +335,10 @@ int main(int argc, char* argv[]) {
             if (!answer) {
                 return EXIT_FAILURE;
             }
-            std::cout << *answer << std::endl;
+            if (const auto printed = print_line(*answer); !printed) {
+                ctx.log.error("Cannot write {} to stdout: {}", *answer, printed.error().message());
+                return EXIT_FAILURE;
+            }
             return 0;
         }
 
@@ -390,9 +412,11 @@ int main(int argc, char* argv[]) {
         };
         top_up();
         ctx.io_context.run();
-        if (publicIp) {
-            std::cout << *publicIp << std::endl;
-        } else {
+        if (!publicIp) {
+            return EXIT_FAILURE;
+        }
+        if (const auto printed = print_line(*publicIp); !printed) {
+            ctx.log.error("Cannot write {} to stdout: {}", *publicIp, printed.error().message());
             return EXIT_FAILURE;
         }
 
