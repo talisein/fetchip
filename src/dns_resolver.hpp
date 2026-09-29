@@ -21,9 +21,8 @@ public:
     asio::awaitable<std::expected<std::string, std::error_code>>
     query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query);
 
-    // The address in a whoami response received over transport.
     std::expected<std::string, std::error_code>
-    parse_dns_response(std::span<const char> response, fip::AddressFamily transport);
+    parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport);
 
 private:
     asio::awaitable<std::expected<asio::ip::udp::resolver::results_type, std::error_code>>
@@ -32,11 +31,11 @@ private:
     std::expected<asio::ip::udp::socket, std::error_code>
     create_socket_and_connect(const asio::ip::udp::endpoint& ep);
 
-    asio::awaitable<std::expected<void, std::error_code>>
+    asio::awaitable<std::expected<DNSMessage, std::error_code>>
     send_dns_query(asio::ip::udp::socket& sock, std::string_view host, DNSQueryType query_type);
 
     asio::awaitable<std::expected<std::string, std::error_code>>
-    receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport);
+    receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport);
 
     fip::context& ctx;
 

@@ -74,7 +74,7 @@ DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
     return s;
 }
 
-asio::awaitable<std::expected<void, std::error_code>>
+asio::awaitable<std::expected<DNSMessage, std::error_code>>
 DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, DNSQueryType query_type)
 {
     DNSMessage message(ctx);
@@ -98,50 +98,72 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
     }
 
     ctx.log.debug("Sent DNS query: {}", message);
-    co_return std::expected<void, std::error_code> {};
+    co_return message;
 }
 
 namespace {
     template<class... Ts>
     struct overloads : Ts... { using Ts::operator()...; };
+
+    bool same_name(std::string_view a, std::string_view b)
+    {
+        return std::ranges::equal(a, b, [](unsigned char x, unsigned char y) {
+            return std::tolower(x) == std::tolower(y);
+        });
+    }
+
+    bool same_question(const DNSQuestion& a, const DNSQuestion& b)
+    {
+        return a.blob.qtype == b.blob.qtype && a.blob.qclass == b.blob.qclass && same_name(a.qname, b.qname);
+    }
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
-DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, fip::AddressFamily transport) {
+DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport) {
+    const auto deadline = std::chrono::steady_clock::now() + fip::dns_resolution_timeout;
     std::array<char, DNSBufferSize> buf;
-    auto [ec, bytes_received] = co_await sock.async_receive(asio::buffer(buf),
-        asio::cancel_after(fip::dns_resolution_timeout, asio::as_tuple(asio::use_awaitable)));
+    std::expected<std::string, std::error_code> result;
 
-    if (ec || 0 == bytes_received) {
-        std::error_code result = ec;
-        // operation_aborted is the timeout only if the caller did not cancel the query.
-        const auto cancelled = (co_await asio::this_coro::cancellation_state).cancelled();
-        if (ec == asio::error::operation_aborted && cancelled == asio::cancellation_type::none) {
-            ctx.log.debug("No response from {} within {}", sock.remote_endpoint(ec).address().to_string(), fip::dns_resolution_timeout);
-            result = std::make_error_code(std::errc::timed_out);
-        } else if (ec) {
-            ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
-        } else {
-            ctx.log.debug("Got an empty UDP response");
-            result = make_error_code(DNSError::DNSResolverEmptyResponse);
+    while (true) {
+        const auto remaining = std::max(deadline - std::chrono::steady_clock::now(), std::chrono::steady_clock::duration::zero());
+        auto [ec, bytes_received] = co_await sock.async_receive(asio::buffer(buf),
+            asio::cancel_after(remaining, asio::as_tuple(asio::use_awaitable)));
+
+        if (ec || 0 == bytes_received) {
+            std::error_code failure = ec;
+            // operation_aborted is the timeout only if the caller did not cancel the query.
+            const auto cancelled = (co_await asio::this_coro::cancellation_state).cancelled();
+            if (ec == asio::error::operation_aborted && cancelled == asio::cancellation_type::none) {
+                ctx.log.debug("No response from {} within {}", sock.remote_endpoint(ec).address().to_string(), fip::dns_resolution_timeout);
+                failure = std::make_error_code(std::errc::timed_out);
+            } else if (ec) {
+                ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
+            } else {
+                ctx.log.debug("Got an empty UDP response");
+                failure = make_error_code(DNSError::DNSResolverEmptyResponse);
+            }
+            result = std::unexpected(failure);
+            break;
         }
-        boost::system::error_code close_ec;
-        sock.close(close_ec);
-        if (close_ec) {
-            ctx.log.debug("Couldn't even close the socket?! {}", close_ec.message());
+
+        result = parse_dns_response(std::span(buf).first(bytes_received), query, transport);
+        if (result || result.error() != make_error_code(DNSError::DNSResolverMismatchedResponse)) {
+            break;
         }
-        co_return std::unexpected(result);
-    }
-    sock.close(ec);
-    if (ec) {
-        ctx.log.warning("Failed to close UDP socket: {}. Ignoring...", ec.message());
+        ctx.log.debug("Discarding a response that does not answer our query");
     }
 
-    co_return parse_dns_response(std::span(buf).first(bytes_received), transport);
+    boost::system::error_code close_ec;
+    sock.close(close_ec);
+    if (close_ec) {
+        ctx.log.warning("Failed to close UDP socket: {}. Ignoring...", close_ec.message());
+    }
+
+    co_return result;
 }
 
 std::expected<std::string, std::error_code>
-DNSResolver::parse_dns_response(std::span<const char> response, fip::AddressFamily transport) {
+DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport) {
     std::ispanstream ss(response);
 
     auto message = DNSMessage::deserialize(ctx, ss);
@@ -150,6 +172,19 @@ DNSResolver::parse_dns_response(std::span<const char> response, fip::AddressFami
         return std::unexpected(message.error());
     }
     ctx.log.debug("{}", *message);
+
+    if (message->get_header().id != query.get_header().id) {
+        ctx.log.debug("Response ID {:#x} does not match query ID {:#x}", message->get_header().id, query.get_header().id);
+        return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+    }
+    if (!(message->get_header().flags & QueryResponse)) {
+        ctx.log.debug("Message is not a response");
+        return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+    }
+    if (!std::ranges::equal(message->get_questions(), query.get_questions(), same_question)) {
+        ctx.log.debug("Response question does not match the query");
+        return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+    }
 
     if (message->get_header().get_response_code() != DNSResponseCodes::NO_ERROR) {
         ctx.log.debug("Bailing due to error response code");
@@ -282,7 +317,7 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
             continue;
         }
 
-        auto result = co_await receive_dns_response(*sock, transport);
+        auto result = co_await receive_dns_response(*sock, *sent_query, transport);
         if (result.has_value()) {
             ctx.log.debug("Fetched current ip {} from {}", *result, host);
             co_return result;

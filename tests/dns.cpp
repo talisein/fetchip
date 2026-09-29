@@ -78,6 +78,13 @@ class e_failing_istringstream : public std::basic_istringstream<CharT> {
     }
 };
 
+std::string with_id(std::string_view response, const DNSMessage& query)
+{
+    std::string patched {response};
+    patched[0] = static_cast<char>(query.get_header().id >> 8);
+    patched[1] = static_cast<char>(query.get_header().id & 0xFF);
+    return patched;
+}
 
 int main() {
     using namespace boost::ut;
@@ -623,14 +630,16 @@ int main() {
         constexpr auto untagged = "\314\347\204\0\0\1\0\1\0\0\0\0\6whoami\2ds\7akahelp\3net\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\10\2ns\4none"sv;
         fip::context ctx(39, true);
         DNSResolver resolver {ctx};
+        DNSMessage query {ctx};
+        query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
 
-        auto address = resolver.parse_dns_response(tagged, fip::AddressFamily::V4);
+        auto address = resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V4);
         expect(address.has_value());
         if (address) {
             expect(eq("198.51.100.39"sv, *address));
         }
-        expect(resolver.parse_dns_response(tagged, fip::AddressFamily::V6) == std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily)));
-        expect(resolver.parse_dns_response(untagged, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+        expect(resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V6) == std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily)));
+        expect(resolver.parse_dns_response(with_id(untagged, query), query, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
     "parse answer after cname"_test = [] {
@@ -638,13 +647,49 @@ int main() {
         constexpr auto cname_only = "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\5\0\1\0\0\0<\0\4\1x\300\14"sv;
         fip::context ctx(39, true);
         DNSResolver resolver {ctx};
+        DNSMessage query {ctx};
+        query.add_question("o-o.myaddr.l.google.com", DNSQueryType::TXT);
 
-        auto address = resolver.parse_dns_response(buf, fip::AddressFamily::V4);
+        auto address = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4);
         expect(address.has_value());
         if (address) {
             expect(eq("198.51.100.39"sv, *address));
         }
-        expect(resolver.parse_dns_response(cname_only, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+        expect(resolver.parse_dns_response(with_id(cname_only, query), query, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+    };
+
+    "reject mismatched response"_test = [] {
+        constexpr auto response = "\314\347\204\0\0\1\0\1\0\0\0\0\6whoami\2ds\7akahelp\3net\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\21\2ns\015198.51.100.39"sv;
+        constexpr auto not_a_response = "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374/\340\7]"sv;
+        const auto mismatched = std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+        fip::context ctx(39, true);
+        DNSResolver resolver {ctx};
+
+        DNSMessage query {ctx};
+        query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
+        auto wrong_id = with_id(response, query);
+        wrong_id[1] ^= 1;
+        expect(resolver.parse_dns_response(wrong_id, query, fip::AddressFamily::V4) == mismatched);
+
+        DNSMessage other_name {ctx};
+        other_name.add_question("whoami.ds.akahelp.org", DNSQueryType::TXT);
+        expect(resolver.parse_dns_response(with_id(response, other_name), other_name, fip::AddressFamily::V4) == mismatched);
+
+        DNSMessage other_type {ctx};
+        other_type.add_question("whoami.ds.akahelp.net", DNSQueryType::A);
+        expect(resolver.parse_dns_response(with_id(response, other_type), other_type, fip::AddressFamily::V4) == mismatched);
+
+        DNSMessage a_query {ctx};
+        a_query.add_question("myip.opendns.com", DNSQueryType::A);
+        expect(resolver.parse_dns_response(with_id(not_a_response, a_query), a_query, fip::AddressFamily::V4) == mismatched);
+
+        DNSMessage other_case {ctx};
+        other_case.add_question("WhoAmI.DS.akahelp.net", DNSQueryType::TXT);
+        auto address = resolver.parse_dns_response(with_id(response, other_case), other_case, fip::AddressFamily::V4);
+        expect(address.has_value());
+        if (address) {
+            expect(eq("198.51.100.39"sv, *address));
+        }
     };
 
     "query answers family"_test = [] {
