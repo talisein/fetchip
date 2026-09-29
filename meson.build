@@ -3,7 +3,7 @@ project('fetchip', 'cpp', version: '0.9.0', license: 'GPL-3.0-or-later', default
 cxxopts_dep = dependency('cxxopts',
                          fallback: ['cxxopts'])
 
-sdjournal_dep = dependency('libsystemd')
+sdjournal_dep = dependency('libsystemd', version: '>=257')
 boost_dep = dependency('boost', modules: ['system'], version: '>=1.86')
 openssl_dep = dependency('openssl', version: '>=3.0.0')
 enum_dep = dependency('magic_enum', version: '>=0.9.6', fallback: ['magic_enum'])

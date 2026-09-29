@@ -9,6 +9,7 @@ lib_srcs = [
   'fetch_error.cpp',
   'http_client.cpp',
   'http_error.cpp',
+  'name_resolver.cpp',
 ]
 
 lib = static_library('fetchip', lib_srcs,

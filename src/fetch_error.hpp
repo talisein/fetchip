@@ -9,6 +9,7 @@
 enum class FetchError
 {
     UnknownServiceType,
+    NameResolutionFailed,
 };
 
 namespace std

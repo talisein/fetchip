@@ -318,7 +318,7 @@ int main(int argc, char* argv[]) {
         // A list, since a signal cannot move while its query holds the slot.
         std::list<Query> queries;
         bool settled = false;
-        // Stragglers can no longer change the outcome. A lookup already inside getaddrinfo still runs to completion.
+        // Stragglers can no longer change the outcome.
         auto settle = [&] {
             settled = true;
             for (auto& query : queries) {

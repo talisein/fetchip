@@ -1,8 +1,12 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include <ranges>
+#include <vector>
+
 #include "http_client.hpp"
 #include "http_error.hpp"
+#include "name_resolver.hpp"
 
 namespace http = beast::http;
 using asio::ip::tcp;
@@ -12,30 +16,8 @@ namespace {
     constexpr std::size_t body_limit = 4096;
     // Beast encodes the version as major * 10 + minor.
     constexpr unsigned http_1_1 = 11;
-
-    asio::awaitable<std::expected<tcp::resolver::results_type, std::error_code>>
-    resolve(fip::context& ctx, std::string_view host, std::string_view port)
-    {
-        tcp::resolver resolver {ctx.io_context};
-        boost::system::error_code ec;
-        tcp::resolver::results_type result;
-        switch (ctx.requested_family) {
-        case fip::AddressFamily::V4:
-            std::tie(ec, result) = co_await resolver.async_resolve(tcp::v4(), host, port, token);
-            break;
-        case fip::AddressFamily::V6:
-            std::tie(ec, result) = co_await resolver.async_resolve(tcp::v6(), host, port, token);
-            break;
-        case fip::AddressFamily::Any:
-            std::tie(ec, result) = co_await resolver.async_resolve(host, port, token);
-            break;
-        }
-        if (ec) {
-            ctx.log.debug("Failed to resolve {}: {}", host, ec.message());
-            co_return std::unexpected(ec);
-        }
-        co_return result;
-    }
+    constexpr asio::ip::port_type http_port = 80;
+    constexpr asio::ip::port_type https_port = 443;
 
     template<class Stream>
     asio::awaitable<std::expected<std::string, std::error_code>>
@@ -70,7 +52,7 @@ namespace {
 
     // The range connect only returns the last endpoint's error, so each failure is logged as it happens.
     asio::awaitable<std::expected<void, std::error_code>>
-    connect(fip::context& ctx, beast::tcp_stream& stream, std::string_view host, const tcp::resolver::results_type& endpoints)
+    connect(fip::context& ctx, beast::tcp_stream& stream, std::string_view host, const std::vector<tcp::endpoint>& endpoints)
     {
         std::optional<tcp::endpoint> attempted;
         // Called before every attempt with the previous attempt's result; before the first, ec is always success.
@@ -114,14 +96,17 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
         co_return std::unexpected(make_error_code(HTTPError::UnsupportedScheme));
     }
 
-    auto endpoints = co_await resolve(ctx, host, secure ? "https"sv : "http"sv);
-    if (!endpoints) {
-        co_return std::unexpected(endpoints.error());
+    auto addresses = co_await resolve_host(ctx, host);
+    if (!addresses) {
+        co_return std::unexpected(addresses.error());
     }
+    const auto endpoints = *addresses
+        | std::views::transform([secure](const auto& address) { return tcp::endpoint {address, secure ? https_port : http_port}; })
+        | std::ranges::to<std::vector>();
 
     if (!secure) {
         beast::tcp_stream stream {ctx.io_context};
-        auto connected = co_await connect(ctx, stream, host, *endpoints);
+        auto connected = co_await connect(ctx, stream, host, endpoints);
         if (!connected) {
             co_return std::unexpected(connected.error());
         }
@@ -141,7 +126,7 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
     }
     stream.set_verify_callback(asio::ssl::host_name_verification(host_name));
 
-    auto connected = co_await connect(ctx, beast::get_lowest_layer(stream), host, *endpoints);
+    auto connected = co_await connect(ctx, beast::get_lowest_layer(stream), host, endpoints);
     if (!connected) {
         co_return std::unexpected(connected.error());
     }

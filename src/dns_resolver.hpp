@@ -25,9 +25,6 @@ public:
     parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport);
 
 private:
-    asio::awaitable<std::expected<asio::ip::udp::resolver::results_type, std::error_code>>
-    get_resolver_address(std::string_view resolver);
-
     std::expected<asio::ip::udp::socket, std::error_code>
     create_socket_and_connect(const asio::ip::udp::endpoint& ep);
 

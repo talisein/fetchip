@@ -32,6 +32,9 @@ exits with an error.
 .PP
 .B fetchip
 speaks HTTP, HTTPS and DNS itself, in one process; it never runs another program.
+Host names are looked up through
+.BR systemd-resolved (8),
+which must be running.
 Every query has a timeout, and outstanding queries are cancelled once the outcome is settled.
 DNS services are queried at the provider's authoritative server, not through the system resolver.
 .SH OPTIONS

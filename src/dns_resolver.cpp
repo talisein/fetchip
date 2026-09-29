@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include "dns_resolver.hpp"
 #include "dns.hpp"
+#include "name_resolver.hpp"
 
 std::optional<fip::AddressFamily> address_family_of(std::string_view text)
 {
@@ -39,6 +40,8 @@ bool query_answers_family(DNSQueryType query, fip::AddressFamily family)
 }
 
 namespace {
+    constexpr asio::ip::port_type dns_port = 53;
+
     fip::AddressFamily family_of(const asio::ip::udp::endpoint& ep)
     {
         return ep.address().is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4;
@@ -259,47 +262,22 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
     return std::string(res);
 }
 
-asio::awaitable<std::expected<asio::ip::udp::resolver::results_type, std::error_code>>
-DNSResolver::get_resolver_address(std::string_view resolver_name)
-{
-    using namespace std::literals;
-    constexpr auto token = asio::as_tuple(asio::use_awaitable);
-    asio::ip::udp::resolver resolver {ctx.io_context};
-    boost::system::error_code ec;
-    asio::ip::udp::resolver::results_type result;
-    switch (ctx.requested_family) {
-    case fip::AddressFamily::V4:
-        std::tie(ec, result) = co_await resolver.async_resolve(asio::ip::udp::v4(), resolver_name, "domain"sv, token);
-        break;
-    case fip::AddressFamily::V6:
-        std::tie(ec, result) = co_await resolver.async_resolve(asio::ip::udp::v6(), resolver_name, "domain"sv, token);
-        break;
-    case fip::AddressFamily::Any:
-        std::tie(ec, result) = co_await resolver.async_resolve(resolver_name, "domain"sv, token);
-        break;
-    }
-    if (ec) {
-        ctx.log.debug("Failed to resolve the resolver: {}", ec.message());
-        co_return std::unexpected(ec);
-    }
-
-    co_return result;
-}
-
 asio::awaitable<std::expected<std::string, std::error_code>>
 DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query) {
-    auto resolver_addrs = co_await get_resolver_address(resolver);
+    auto resolver_addrs = co_await resolve_host(ctx, resolver);
     if (!resolver_addrs) {
+        ctx.log.debug("Failed to resolve the resolver: {}", resolver_addrs.error().message());
         co_return std::unexpected(resolver_addrs.error());
     }
 
     std::error_code last_error {};
 
-    for (const auto& resolver_addr : *resolver_addrs) {
-        const auto transport = family_of(resolver_addr.endpoint());
+    for (const auto& address : *resolver_addrs) {
+        const asio::ip::udp::endpoint resolver_addr {address, dns_port};
+        const auto transport = family_of(resolver_addr);
         if (!query_answers_family(query, transport)) {
             last_error = make_error_code(DNSError::DNSResolverWrongFamily);
-            ctx.log.debug("Skipping {}: {} cannot answer over {}", resolver_addr.endpoint().address().to_string(), magic_enum::enum_name(query), magic_enum::enum_name(transport));
+            ctx.log.debug("Skipping {}: {} cannot answer over {}", resolver_addr.address().to_string(), magic_enum::enum_name(query), magic_enum::enum_name(transport));
             continue;
         }
 
