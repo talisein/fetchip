@@ -10,6 +10,7 @@
 #include <ranges>
 #include <algorithm>
 #include <expected>
+#include <functional>
 #include <cxxopts.hpp>
 #include <systemd/sd-journal.h>
 #include <sys/socket.h>
@@ -87,6 +88,13 @@ constexpr auto services = std::to_array<Service>({
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return s.resolver.has_value(); else return true; }) );
+
+// DNS_A and DNS_AAAA services answer in their query's family; the others answer in whichever family connected.
+bool serves_family(const Service& service, fip::AddressFamily family)
+{
+    const auto dns_query = dns_query_type(service.type);
+    return !dns_query || query_answers_family(*dns_query, family);
+}
 
 // What -s accepts: DNS for every DNS_* type, then each type by name.
 std::vector<std::string_view> service_type_names()
@@ -274,8 +282,7 @@ int main(int argc, char* argv[]) {
                 return true;
             }
         }) | std::views::filter([family](const auto& service) {
-            const auto query = dns_query_type(service.type);
-            return !query || query_answers_family(*query, family);
+            return serves_family(service, family);
         }) | std::views::filter([&selectedName](const auto& service) {
             return !selectedName || service.name == *selectedName;
         });
@@ -344,16 +351,24 @@ int main(int argc, char* argv[]) {
 
         // Services are drawn from the back, so each is asked at most once.
         std::ranges::shuffle(candidates, ctx.rng);
-        IPConsensus consensus;
-        std::size_t in_flight = 0;
+        IPConsensus consensus {family};
         std::optional<std::string> publicIp;
 
         struct Query {
+            Service service;
             asio::cancellation_signal cancel;
             bool running = true;
         };
         // A list, since a signal cannot move while its query holds the slot.
         std::list<Query> queries;
+        auto in_flight = [&](fip::AddressFamily family) {
+            return static_cast<std::size_t>(std::ranges::count_if(queries, [family](const Query& query) {
+                return query.running && serves_family(query.service, family);
+            }));
+        };
+        auto left = [&](fip::AddressFamily family) {
+            return static_cast<std::size_t>(std::ranges::count_if(candidates, std::bind_back(serves_family, family)));
+        };
         bool settled = false;
         // Stragglers can no longer change the outcome.
         auto settle = [&] {
@@ -366,48 +381,60 @@ int main(int argc, char* argv[]) {
         };
 
         auto top_up = [&](this auto& self) -> void {
-            const auto needed = consensus.needed();
-            if (in_flight + candidates.size() < needed) {
-                ctx.log.error("No consensus from {} answers, {} in flight and {} services left", consensus.answers(), in_flight, candidates.size());
-                settle();
-                return;
-            }
-            for (; in_flight < needed; ++in_flight) {
-                const auto service = candidates.back();
-                candidates.pop_back();
-                auto* query = &queries.emplace_back();
-                asio::co_spawn(ctx.io_context, query_public_ip(ctx, service),
-                               asio::bind_cancellation_slot(query->cancel.slot(),
-                               [&, service, query](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
-                                   query->running = false;
-                                   --in_flight;
-                                   // A cancelled query unwinds by throwing operation_aborted from its next co_await.
-                                   if (settled) {
-                                       return;
-                                   }
-                                   // One failed query is one lost vote, never the whole run.
-                                   if (e) {
-                                       try { std::rethrow_exception(e); }
-                                       catch (const std::exception& ex) {
-                                           ctx.log.error("{} failed: {}", service.address, ex.what());
+            // Only services that can answer in a family can vote in it, so a family stays open while
+            // enough of them are in flight or left. Every open family is kept topped up, so whichever
+            // wins first is printed.
+            bool open = false;
+            for (const auto family : {fip::AddressFamily::V4, fip::AddressFamily::V6}) {
+                const auto needed = consensus.needed(family);
+                if (!needed || in_flight(family) + left(family) < *needed) {
+                    continue;
+                }
+                open = true;
+                while (in_flight(family) < *needed) {
+                    const auto next = std::ranges::find_last_if(candidates, std::bind_back(serves_family, family)).begin();
+                    if (next == candidates.end()) {
+                        break;
+                    }
+                    const auto service = *next;
+                    candidates.erase(next);
+                    auto* query = &queries.emplace_back(service);
+                    asio::co_spawn(ctx.io_context, query_public_ip(ctx, service),
+                                   asio::bind_cancellation_slot(query->cancel.slot(),
+                                   [&, service, query](std::exception_ptr e, std::expected<std::string, std::error_code> result) {
+                                       query->running = false;
+                                       // A cancelled query unwinds by throwing operation_aborted from its next co_await.
+                                       if (settled) {
+                                           return;
                                        }
-                                       catch (...) {
-                                           ctx.log.error("{} failed with an unknown exception", service.address);
+                                       // One failed query is one lost vote, never the whole run.
+                                       if (e) {
+                                           try { std::rethrow_exception(e); }
+                                           catch (const std::exception& ex) {
+                                               ctx.log.error("{} failed: {}", service.address, ex.what());
+                                           }
+                                           catch (...) {
+                                               ctx.log.error("{} failed with an unknown exception", service.address);
+                                           }
+                                           self();
+                                           return;
+                                       }
+                                       if (result && !consensus.record(*result)) {
+                                           ctx.log.debug("{} did not answer with an address: {}", service.address, *result);
+                                       }
+                                       if (auto winner = consensus.winner()) {
+                                           ctx.log.notice("{} of {} answers agreed on {}", winner->votes, winner->answers, winner->address);
+                                           publicIp = std::move(winner->address);
+                                           settle();
+                                           return;
                                        }
                                        self();
-                                       return;
-                                   }
-                                   if (result && !consensus.record(*result)) {
-                                       ctx.log.debug("{} did not answer with an address: {}", service.address, *result);
-                                   }
-                                   if (auto winner = consensus.winner()) {
-                                       ctx.log.notice("{} of {} answers agreed on {}", consensus.votes_for(*winner), consensus.answers(), *winner);
-                                       publicIp = std::move(winner);
-                                       settle();
-                                       return;
-                                   }
-                                   self();
-                               }));
+                                   }));
+                }
+            }
+            if (!open) {
+                ctx.log.error("No consensus from {} answers, {} in flight and {} services left", consensus.answers(), std::ranges::count(queries, true, &Query::running), candidates.size());
+                settle();
             }
         };
         top_up();

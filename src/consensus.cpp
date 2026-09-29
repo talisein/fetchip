@@ -4,6 +4,21 @@
 #include "consensus.hpp"
 #include "net.hpp"
 
+namespace {
+    std::optional<std::size_t> slot(fip::AddressFamily family)
+    {
+        switch (family) {
+        case fip::AddressFamily::V4:
+            return 0;
+        case fip::AddressFamily::V6:
+            return 1;
+        case fip::AddressFamily::Any:
+            break;
+        }
+        return std::nullopt;
+    }
+}
+
 bool IPConsensus::record(std::string_view text)
 {
     boost::system::error_code ec;
@@ -11,10 +26,13 @@ bool IPConsensus::record(std::string_view text)
     if (ec != boost::system::error_code {}) {
         return false;
     }
-    auto& tally = tallies[address.is_v6()];
+    auto tally = tally_for(address.is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4);
+    if (!tally) {
+        return false;
+    }
     // Canonical text, so different spellings of one IPv6 address agree.
-    ++tally.votes[address.to_string()];
-    ++tally.total;
+    ++tally->get().votes[address.to_string()];
+    ++tally->get().total;
     return true;
 }
 
@@ -29,13 +47,13 @@ std::size_t IPConsensus::Tally::leader_votes() const
     return it == votes.end() ? 0 : it->second;
 }
 
-std::optional<std::string> IPConsensus::Tally::winner() const
+std::optional<IPConsensus::Winner> IPConsensus::Tally::winner() const
 {
     auto it = leader();
     if (it == votes.end() || it->second < 2 || 2 * it->second <= total) {
         return std::nullopt;
     }
-    return it->first;
+    return Winner {it->first, it->second, total};
 }
 
 std::size_t IPConsensus::Tally::needed() const
@@ -47,32 +65,41 @@ std::size_t IPConsensus::Tally::needed() const
     return std::max(for_majority, for_pair);
 }
 
+std::optional<std::reference_wrapper<IPConsensus::Tally>> IPConsensus::tally_for(fip::AddressFamily family)
+{
+    return slot(family).transform([this](std::size_t i) { return std::ref(tallies[i]); });
+}
+
+std::optional<std::reference_wrapper<const IPConsensus::Tally>> IPConsensus::tally_for(fip::AddressFamily family) const
+{
+    return slot(family).transform([this](std::size_t i) { return std::cref(tallies[i]); });
+}
+
+std::optional<std::reference_wrapper<const IPConsensus::Tally>> IPConsensus::contender(fip::AddressFamily family) const
+{
+    // Under -4 or -6 the other family's answers can never be printed.
+    if (requested != fip::AddressFamily::Any && family != requested) {
+        return std::nullopt;
+    }
+    return tally_for(family);
+}
+
 std::size_t IPConsensus::answers() const
 {
     return std::ranges::fold_left(tallies | std::views::transform(&Tally::total), std::size_t {0}, std::plus {});
 }
 
-std::size_t IPConsensus::votes_for(const std::string& address) const
+std::optional<IPConsensus::Winner> IPConsensus::winner() const
 {
-    for (const auto& tally : tallies) {
-        if (auto it = tally.votes.find(address); it != tally.votes.end()) {
-            return it->second;
-        }
-    }
-    return 0;
-}
-
-std::optional<std::string> IPConsensus::winner() const
-{
-    for (const auto& tally : tallies) {
-        if (auto winner = tally.winner()) {
+    for (const auto family : {fip::AddressFamily::V4, fip::AddressFamily::V6}) {
+        if (auto winner = contender(family).and_then(&Tally::winner)) {
             return winner;
         }
     }
     return std::nullopt;
 }
 
-std::size_t IPConsensus::needed() const
+std::optional<std::size_t> IPConsensus::needed(fip::AddressFamily family) const
 {
-    return std::ranges::min(tallies | std::views::transform(&Tally::needed));
+    return contender(family).transform(&Tally::needed);
 }

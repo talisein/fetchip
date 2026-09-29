@@ -3,16 +3,11 @@
 #include <pcg_random.hpp>
 #include <random>
 
+#include "address_family.hpp"
 #include "net.hpp"
 
 namespace fip
 {
-    enum class AddressFamily {
-        Any,
-        V4,
-        V6
-    };
-
     struct context {
     public:
         context(pcg32::state_type seed, bool is_testing = false) :
