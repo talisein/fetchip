@@ -271,7 +271,14 @@ int main(int argc, char* argv[]) {
                                    ctx.log.error("{} failed: {}", service.address, result.error().message());
                                    return;
                                }
-                               answer = std::move(*result);
+                               // Canonical text, as the consensus path prints.
+                               boost::system::error_code ec;
+                               auto address = asio::ip::make_address(*result, ec);
+                               if (ec) {
+                                   ctx.log.error("{} did not answer with an address: {}", service.address, *result);
+                                   return;
+                               }
+                               answer = address.to_string();
                            });
             ctx.io_context.run();
             if (!answer) {
