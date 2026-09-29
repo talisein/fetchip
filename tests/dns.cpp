@@ -210,8 +210,8 @@ int main() {
         {"\x09icanhazip\003com\0\x00\x01\x00\x01"sv,                             "icanhazip.com"sv},
         {"\021averylonghostname\003com\0\x00\x01\x00\x01"sv,                     "averylonghostname.com"sv},
         {"\020verylonghostname\021averylonghostname\003com\0\x00\x01\x00\x01"sv, "verylonghostname.averylonghostname.com"sv},
-        {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077a23456789012345678901234567890123456789012345678901234567890123\0\x00\x01\x00\x01"sv,
-         "x23456789012345678901234567890123456789012345678901234567890123.y23456789012345678901234567890123456789012345678901234567890123.z23456789012345678901234567890123456789012345678901234567890123.a23456789012345678901234567890123456789012345678901234567890123"sv}
+        {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\075a234567890123456789012345678901234567890123456789012345678901\0\x00\x01\x00\x01"sv,
+         "x23456789012345678901234567890123456789012345678901234567890123.y23456789012345678901234567890123456789012345678901234567890123.z23456789012345678901234567890123456789012345678901234567890123.a234567890123456789012345678901234567890123456789012345678901"sv}
     };
 
     "question deserialize compressed"_test = [] (const auto &pair) {
@@ -294,6 +294,7 @@ int main() {
         expect(eq(result.has_value(), false)) << nasty;
         expect(eq(result.error(), DNSError::DNSHostToHostExcessiveHostLabelSize)) << nasty;
     } | std::vector<std::pair<std::string_view, std::string_view>> {
+        {"\x40x234567890123456789012345678901234567890123456789012345678901234\0"sv, "64"sv},
         {"\x41x123124312"sv, "65"sv},
         {"\x41x234567890123456789012345678901234567890123456789012345\003com"sv, "65"sv}
     };
@@ -325,7 +326,7 @@ int main() {
         {"\x7Fx3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077a23456789012345678901234567890123456789012345678901234567890123\077b23456789012345678901234567890123456789012345678901234567890123\003com\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x01x\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
-        {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
+        {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
     };
 
     "question exceptional istream"_test = [] (const auto &fuzz) {
@@ -525,6 +526,62 @@ int main() {
             expect(eq("nyan!"sv, message.error().message()));
         }
 
+    };
+
+    // Real responses at the RFC 1035 limits, captured 2026-09-29 with
+    // strace -e trace=recvmsg dig +noedns A <name>.
+    static constexpr auto max_label_name = "thelongestdomainnameintheworldandthensomeandthensomemoreandmore.com"sv;
+    static constexpr auto max_label_response = "\347\234\201\200\0\1\0\1\0\0\0\0?thelongestdomainnameintheworldandthensomeandthensomemoreandmore\3com\0\0\1\0\1\300\f\0\1\0\1\0\0\33i\0\4\37\301\200-"sv;
+    static constexpr auto max_name_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.1-2-3-4-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.sslip.io"sv;
+    static constexpr auto max_name_response = "\\&\201\200\0\1\0\1\0\0\0\0?aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa41-2-3-4-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\5sslip\2io\0\0\1\0\1\300\f\0\1\0\1\0\0\rZ\0\4\1\2\3\4"sv;
+
+    "dig read at size limits"_test = [] (const auto& capture) {
+        const auto& [name, buf, address] = capture;
+        fip::context ctx(39, true);
+        std::ispanstream ss {buf};
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(message.has_value()) << name;
+        if (message) {
+            expect(eq(name, message->get_questions().front().qname));
+            expect(eq(name, message->get_answers().front().name));
+        }
+
+        DNSResolver resolver {ctx};
+        DNSMessage query {ctx};
+        query.add_question(name, DNSQueryType::A);
+        auto parsed = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4);
+        expect(parsed.has_value()) << name;
+        if (parsed) {
+            expect(eq(address, *parsed));
+        }
+    } | std::vector<std::tuple<std::string_view, std::string_view, std::string_view>> {
+        {max_label_name, max_label_response, "31.193.128.45"sv},
+        {max_name_name, max_name_response, "1.2.3.4"sv},
+    };
+
+    // A server can't send names past the limits, so these grow the real
+    // captures by one byte.
+    "dig read past size limits"_test = [] (const auto& mutation) {
+        const auto& [buf, err] = mutation;
+        fip::context ctx(39, true);
+        std::ispanstream ss {buf};
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(!message.has_value());
+        if (!message) {
+            expect(eq(magic_enum::enum_name(static_cast<DNSError>(message.error().value())), magic_enum::enum_name(err)));
+        }
+    } | std::vector<std::pair<std::string, DNSError>> {
+        // 64-byte label.
+        {std::string(max_label_response).replace(max_label_response.find("?the"sv), 1, "@e"sv),
+         DNSError::DNSHostToHostExcessiveHostLabelSize},
+        // 256-octet question name.
+        {std::string(max_name_response).replace(max_name_response.find("41-2-3-4-"sv), 1, "5b"sv),
+         DNSError::DNSHostToHostExcessiveHostnameSize},
+        // Answer name of one label plus a pointer to the 255-octet question name.
+        {std::string(max_name_response).replace(max_name_response.rfind("\300\f"sv), 2, "\1x\300\f"sv),
+         DNSError::DNSHostToHostExcessiveHostnameSize},
     };
 
     "edns nonzero ttl"_test = [] {

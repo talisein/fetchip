@@ -128,6 +128,11 @@ namespace {
                     // The accumulated prefix ends in '.'; the cached name has none.
                     auto res = hostname.str() + it->second;
                     if (0 < res.size() && '.' == res.back()) res.pop_back(); // Pointer to the root name
+                    // 253 text characters is the 255-octet wire limit.
+                    if (253 < res.size()) {
+                        ctx.log.debug("Excessive hostname size {} > 253: '{}'", res.size(), res);
+                        return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
+                    }
 
                     if (resume) is.seekg(*resume);
                     auto [res_it, _] = jump_table.emplace(start_pos, std::move(res));
@@ -146,7 +151,7 @@ namespace {
                 continue;
             }
 
-            if (64 < label_size) {
+            if (63 < label_size) {
                 return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostLabelSize));
             }
 
@@ -156,8 +161,10 @@ namespace {
             }
             *os_iter = '.';
 
-        } while (hostname.tellp() < 257_soff);
-        ctx.log.debug("Excessive hostname size {} > 256: '{}'", static_cast<std::streamoff>(hostname.tellp()), hostname.view());
+            // Each label is followed by '.', so the stream is one shy of the
+            // wire length: 254 here is the 255-octet limit.
+        } while (hostname.tellp() < 255_soff);
+        ctx.log.debug("Excessive hostname size {} > 254: '{}'", static_cast<std::streamoff>(hostname.tellp()), hostname.view());
         return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
     }
 }
