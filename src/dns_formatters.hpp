@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <format>
+#include <ranges>
 #include "dns.hpp"
 
 template <>
@@ -125,7 +126,7 @@ struct std::formatter<DNSResourceRecord> {
                 case DNSQueryType::AAAA:
                     return format_to(out_iter, "{} }}", std::get<RData_AAAA>(rr.rdata));
                 case DNSQueryType::TXT:
-                    return format_to(out_iter, "RData_TXT: {} }}", std::get<RData_TXT>(rr.rdata).text);
+                    return format_to(out_iter, "RData_TXT: {} }}", std::get<RData_TXT>(rr.rdata).strings | std::views::join_with(' ') | std::ranges::to<std::string>());
                 default:
                     return format_to(out_iter, "(unimplemented rdata formatter) }}");
             }

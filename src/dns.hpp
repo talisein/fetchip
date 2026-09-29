@@ -192,7 +192,7 @@ struct RData_MX {
 
 // Struct for RDATA in DNSAnswer for TXT (Text) records
 struct RData_TXT {
-    std::string text;  // Text data
+    std::vector<std::string> strings;  // Character-strings, in wire order
 };
 
 // Struct for RDATA in DNSAnswer for SRV (Service location) records

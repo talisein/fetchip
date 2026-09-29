@@ -195,19 +195,21 @@ DNSResolver::parse_dns_response(std::span<const char> response, fip::AddressFami
                        res = inet_ntop(AF_INET6, &aaaa.ipv6_address, address.data(), address.size());
                    },
                    [&](const RData_TXT& txt) {
-                       auto family = address_family_of(txt.text);
-                       if (!family) {
-                           ctx.log.debug("TXT answer is not an IP address: {}", txt.text);
+                       // Some providers tag the address, as in akahelp's "ns" "<ip>".
+                       auto text = std::ranges::find_if(txt.strings, [](const auto& s) { return address_family_of(s).has_value(); });
+                       if (text == txt.strings.end()) {
+                           ctx.log.debug("TXT answer holds no IP address: {}", txt.strings);
                            failure = DNSError::DNSResolverUnexpectedAnswer;
                            return;
                        }
-                       ctx.log.debug("TXT answer {} is {}", txt.text, magic_enum::enum_name(*family));
+                       auto family = address_family_of(*text);
+                       ctx.log.debug("TXT answer {} is {}", *text, magic_enum::enum_name(*family));
                        if (*family != transport) {
                            ctx.log.debug("TXT answer family does not match transport {}", magic_enum::enum_name(transport));
                            failure = DNSError::DNSResolverWrongFamily;
                            return;
                        }
-                       std::ranges::copy(txt.text, address.data());
+                       std::ranges::copy(*text, address.data());
                        res = address.data();
                    },
                    [&](const auto& unknown) {

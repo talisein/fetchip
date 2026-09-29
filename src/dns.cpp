@@ -256,12 +256,14 @@ DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
                 break;
             case DNSQueryType::TXT:
                 txt = std::get<RData_TXT>(rdata);
-                if (txt.text.size() > std::numeric_limits<uint8_t>::max()) {
-                    ctx.log.debug("TXT string too long to serialize: {} bytes", txt.text.size());
-                    return std::unexpected(make_error_code(DNSError::SerializeStreamFailure));
+                for (const auto& text : txt.strings) {
+                    if (text.size() > std::numeric_limits<uint8_t>::max()) {
+                        ctx.log.debug("TXT string too long to serialize: {} bytes", text.size());
+                        return std::unexpected(make_error_code(DNSError::SerializeStreamFailure));
+                    }
+                    os.put(static_cast<char>(text.size()));
+                    std::ranges::copy(text, std::ostreambuf_iterator(os));
                 }
-                os.put(static_cast<char>(txt.text.size()));
-                std::ranges::copy(txt.text, std::ostreambuf_iterator(os));
                 break;
             default:
                 ctx.log.debug("Unimplemented! deserialized resource record type {}", magic_enum::enum_name(blob.type));
@@ -295,7 +297,7 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
 
         RData_AAAA aaaa {};
         RData_TXT txt;
-        uint8_t txt_len;
+        std::string txt_rdata;
         std::expected<RData_OPT, std::error_code> opt;
         switch (res.blob.type) {
             case DNSQueryType::A:
@@ -322,18 +324,22 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
                     ctx.log.debug("TXT record with rdlength 0");
                     return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
                 }
-                txt_len = static_cast<uint8_t>(is.get());
-                if (!is || 1 + txt_len > res.blob.rdlength) {
-                    ctx.log.debug("TXT string length {} overruns rdlength {}", txt_len, res.blob.rdlength);
+                std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(res.blob.rdlength), std::back_inserter(txt_rdata));
+                if (txt_rdata.size() != res.blob.rdlength) {
+                    ctx.log.debug("Premature EOF deserializing TXT record. {} < {}", txt_rdata.size(), res.blob.rdlength);
                     return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
                 }
-                std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(txt_len), std::back_inserter(txt.text));
-                if (txt.text.size() != txt_len) {
-                    ctx.log.debug("Premature EOF deserializing TXT record. {} < {}", txt.text.size(), txt_len);
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                // The rdata is a run of character-strings, each a length byte and that many bytes.
+                for (std::string_view rest {txt_rdata}; !rest.empty(); ) {
+                    const auto txt_len = static_cast<uint8_t>(rest.front());
+                    rest.remove_prefix(1);
+                    if (txt_len > rest.size()) {
+                        ctx.log.debug("TXT string length {} overruns the {} bytes left", txt_len, rest.size());
+                        return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                    }
+                    txt.strings.emplace_back(rest.substr(0, txt_len));
+                    rest.remove_prefix(txt_len);
                 }
-                // only the first character-string is kept
-                is.ignore(res.blob.rdlength - 1 - txt_len);
                 res.rdata = txt;
                 break;
             case DNSQueryType::OPT:
