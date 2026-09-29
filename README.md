@@ -26,7 +26,7 @@ fetchip [-4 | -6] [-s TYPE] [-n NAME] [-i] [-v]
 |---|---|
 | `-4` | Fetch the public IPv4 address |
 | `-6` | Fetch the public IPv6 address |
-| `-s`, `--service TYPE` | Only ask services of one type: `HTTP`, `HTTPS`, `DNS`, `DNS_A`, `DNS_AAAA` or `DNS_TXT`. `DNS` selects all three DNS types |
+| `-s`, `--service TYPE` | Only ask services of one type: `HTTP`, `HTTPS`, `DNS`, `DNS_A`, `DNS_AAAA` or `DNS_TXT`. `DNS` selects all three DNS types. `HTTP` implies `-i` |
 | `-n`, `--name NAME` | Ask only the named service and print its answer, without consensus |
 | `-i`, `--insecure` | Use the plain HTTP endpoints instead of HTTPS |
 | `-v`, `--verbose` | Copy log messages to stderr |

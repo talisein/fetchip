@@ -145,7 +145,7 @@ int main(int argc, char* argv[]) {
     cxxopts::Options options("fetchip", "Retrieve public IP from random service");
     options.add_options()
         ("h,help", "Show help")
-        ("s,service", "Service type (HTTP, HTTPS, DNS, DNS_A, DNS_AAAA or DNS_TXT)", cxxopts::value<std::string>())
+        ("s,service", "Service type (HTTP, HTTPS, DNS, DNS_A, DNS_AAAA or DNS_TXT); HTTP implies -i", cxxopts::value<std::string>())
         ("n,name", "Ask only the named service and print its answer, without consensus", cxxopts::value<std::string>())
         ("i,insecure", "Use HTTP instead of HTTPS", cxxopts::value<bool>()->default_value("false"))
         ("v,verbose", "Print verbose output to stderr")
@@ -226,7 +226,9 @@ int main(int argc, char* argv[]) {
                           : result.count("6") ? fip::AddressFamily::V6
                           : fip::AddressFamily::Any;
 
-        auto use_secure = !result["insecure"].as<bool>();
+        // -s HTTP explicitly asks for plain HTTP, so it implies -i.
+        auto use_secure = !result["insecure"].as<bool>()
+                          && selectedType != ServiceType::HTTP;
         auto secureServices = std::views::filter(services, [use_secure](const auto &service) {
             if (use_secure && service.type == ServiceType::HTTP)
                 return false;

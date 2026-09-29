@@ -55,7 +55,7 @@ namespace fip
         constexpr void log(int priority, Format&& format, Params&&... params) const {
             auto msg = std::vformat(std::forward<Format>(format), std::make_format_args(params...));
             if (!is_testing && (priority != LOG_DEBUG || journal_debug)) {
-                sd_journal_print(priority, msg.c_str());
+                sd_journal_print(priority, "%s", msg.c_str());
             }
 
             if (is_verbose) {
@@ -70,7 +70,7 @@ namespace fip
         template <typename Message>
         constexpr void log(int priority, Message&& msg) const {
             if (!is_testing && (priority != LOG_DEBUG || journal_debug)) {
-                sd_journal_print(priority, msg);
+                sd_journal_print(priority, "%s", msg);
             }
 
             if (is_verbose) {
