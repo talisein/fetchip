@@ -204,6 +204,11 @@ int main(int argc, char* argv[]) {
     try {
         auto result = options.parse(argc, argv);
 
+        if (!result.unmatched().empty()) {
+            std::cerr << std::format("Unexpected argument '{}'\n", result.unmatched().front());
+            return EXIT_FAILURE;
+        }
+
         if (result.count("help")) {
             if (!print_line(options.help({""}))) {
                 return EXIT_FAILURE;
