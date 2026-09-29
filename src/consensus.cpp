@@ -26,7 +26,7 @@ bool IPConsensus::record(std::string_view text)
     if (ec != boost::system::error_code {}) {
         return false;
     }
-    auto tally = tally_for(address.is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4);
+    auto tally = tally_for(fip::family_of(address));
     if (!tally) {
         return false;
     }

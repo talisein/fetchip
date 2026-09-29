@@ -1,4 +1,3 @@
-#include <bit>
 #include <ranges>
 #include <span>
 #include <spanstream>
@@ -41,11 +40,6 @@ bool query_answers_family(DNSQueryType query, fip::AddressFamily family)
 
 namespace {
     constexpr asio::ip::port_type dns_port = 53;
-
-    fip::AddressFamily family_of(const asio::ip::address& address)
-    {
-        return address.is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4;
-    }
 }
 
 std::expected<asio::ip::udp::socket, std::error_code>
@@ -208,58 +202,47 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
         return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
     }
 
-    // TODO: refactor to propagate error types and not use char*
-    std::array<char, INET6_ADDRSTRLEN + 1> address {};
-    const char *res = nullptr;
-    DNSError failure = DNSError::DNSResolverErrorResponse;
-    std::visit(overloads
+    using answer_t = std::expected<std::string, std::error_code>;
+    auto address = std::visit(overloads
                {
-                   [&](const RData_A& a) {
+                   [&](const RData_A& a) -> answer_t {
                        if (transport != fip::AddressFamily::V4) {
                            ctx.log.debug("Got an A answer over {}", magic_enum::enum_name(transport));
-                           failure = DNSError::DNSResolverWrongFamily;
-                           return;
+                           return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
                        }
-                       const in_addr network_order { std::endian::native == std::endian::big ? a.ipv4_address.s_addr : std::byteswap(a.ipv4_address.s_addr) };
-                       res = inet_ntop(AF_INET, &network_order, address.data(), address.size());
+                       return asio::ip::address_v4(a.ipv4_address.s_addr).to_string();
                    },
-                   [&](const RData_AAAA& aaaa) {
+                   [&](const RData_AAAA& aaaa) -> answer_t {
                        if (transport != fip::AddressFamily::V6) {
                            ctx.log.debug("Got an AAAA answer over {}", magic_enum::enum_name(transport));
-                           failure = DNSError::DNSResolverWrongFamily;
-                           return;
+                           return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
                        }
-                       res = inet_ntop(AF_INET6, &aaaa.ipv6_address, address.data(), address.size());
+                       return asio::ip::address_v6(std::to_array(aaaa.ipv6_address.s6_addr)).to_string();
                    },
-                   [&](const RData_TXT& txt) {
+                   [&](const RData_TXT& txt) -> answer_t {
                        // Some providers tag the address, as in akahelp's "ns" "<ip>".
-                       auto text = std::ranges::find_if(txt.strings, [](const auto& s) { return address_family_of(s).has_value(); });
+                       const auto text = std::ranges::find_if(txt.strings, [](const auto& s) { return address_family_of(s).has_value(); });
                        if (text == txt.strings.end()) {
                            ctx.log.debug("TXT answer holds no IP address: {}", txt.strings);
-                           failure = DNSError::DNSResolverUnexpectedAnswer;
-                           return;
+                           return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
                        }
-                       auto family = address_family_of(*text);
-                       ctx.log.debug("TXT answer {} is {}", *text, magic_enum::enum_name(*family));
-                       if (*family != transport) {
+                       const auto family = *address_family_of(*text);
+                       ctx.log.debug("TXT answer {} is {}", *text, magic_enum::enum_name(family));
+                       if (family != transport) {
                            ctx.log.debug("TXT answer family does not match transport {}", magic_enum::enum_name(transport));
-                           failure = DNSError::DNSResolverWrongFamily;
-                           return;
+                           return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
                        }
-                       std::ranges::copy(*text, address.data());
-                       res = address.data();
+                       return *text;
                    },
-                   [&](const auto& unknown) {
+                   [&](const auto& unknown) -> answer_t {
                        ctx.log.debug("Unknown RData in variant?! {}", typeid(unknown).name());
+                       return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
                    }
                }, answer->rdata);
-    if (nullptr == res) {
-        ctx.log.debug("Bailing because we couldn't populate the result string");
-        return std::unexpected(make_error_code(failure));
+    if (address) {
+        ctx.log.debug("Got response IP: {}", *address);
     }
-
-    ctx.log.debug("Got response IP: {}", res);
-    return std::string(res);
+    return address;
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
@@ -273,7 +256,7 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
     std::error_code last_error {};
 
     for (const auto& address : *resolver_addrs) {
-        const auto transport = family_of(address);
+        const auto transport = fip::family_of(address);
         if (!query_answers_family(query, transport)) {
             last_error = make_error_code(DNSError::DNSResolverWrongFamily);
             ctx.log.debug("Skipping {}: {} cannot answer over {}", address.to_string(), magic_enum::enum_name(query), magic_enum::enum_name(transport));

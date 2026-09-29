@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -30,6 +31,12 @@ namespace {
         return {-r, std::system_category()};
     }
 
+    auto elements_of(sd_json_variant* array)
+    {
+        return std::views::iota(0uz, sd_json_variant_elements(array))
+             | std::views::transform([array](std::size_t i) { return sd_json_variant_by_index(array, i); });
+    }
+
     template<class Bytes>
     std::expected<Bytes, std::error_code> address_bytes(sd_json_variant* array)
     {
@@ -37,13 +44,11 @@ namespace {
         if (!sd_json_variant_is_array(array) || sd_json_variant_elements(array) != bytes.size()) {
             return std::unexpected(std::make_error_code(std::errc::bad_message));
         }
-        for (std::size_t i = 0; i < bytes.size(); ++i) {
-            auto* byte = sd_json_variant_by_index(array, i);
-            if (!sd_json_variant_is_unsigned(byte) || sd_json_variant_unsigned(byte) > 0xff) {
-                return std::unexpected(std::make_error_code(std::errc::bad_message));
-            }
-            bytes[i] = static_cast<unsigned char>(sd_json_variant_unsigned(byte));
+        const auto is_byte = [](sd_json_variant* byte) { return sd_json_variant_is_unsigned(byte) && sd_json_variant_unsigned(byte) <= 0xff; };
+        if (!std::ranges::all_of(elements_of(array), is_byte)) {
+            return std::unexpected(std::make_error_code(std::errc::bad_message));
         }
+        std::ranges::transform(elements_of(array), bytes.begin(), [](sd_json_variant* byte) { return static_cast<unsigned char>(sd_json_variant_unsigned(byte)); });
         return bytes;
     }
 
@@ -101,8 +106,8 @@ namespace {
         std::vector<asio::ip::address> addresses;
         auto* entries = sd_json_variant_by_key(parameters, "addresses");
         if (sd_json_variant_is_array(entries)) {
-            for (std::size_t i = 0; i < sd_json_variant_elements(entries); ++i) {
-                if (auto address = parse_address(sd_json_variant_by_index(entries, i))) {
+            for (auto* entry : elements_of(entries)) {
+                if (auto address = parse_address(entry)) {
                     addresses.push_back(*address);
                 } else {
                     state.ctx.log.debug("Skipping a malformed address for {}: {}", state.host, address.error().message());

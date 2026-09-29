@@ -16,40 +16,30 @@ template<size_t fail_count>
 class throws_after_failcount_streambuf : public std::basic_streambuf<char> {
 public:
     std::string str;
-    const char *begin;
-    const char *it;
-    const char *end;
+    std::string::const_iterator it;
     size_t count;
     size_t local_fail_count;
-    throws_after_failcount_streambuf(size_t local_fail_count = fail_count) :
-        std::basic_streambuf<char>(),
-        count(0),
-        local_fail_count(local_fail_count)
-    {
-    }
-
-    throws_after_failcount_streambuf(std::string_view in, size_t local_fail_count = fail_count) :
+    throws_after_failcount_streambuf(std::string_view in = {}, size_t local_fail_count = fail_count) :
         std::basic_streambuf<char>(),
         str(in),
-        begin(std::to_address(in.begin())),
-        it(begin),
-        end(std::to_address(in.end())),
+        it(str.cbegin()),
         count(0),
         local_fail_count(local_fail_count)
     {
     }
+    throws_after_failcount_streambuf(const throws_after_failcount_streambuf&) = delete;
+    throws_after_failcount_streambuf& operator=(const throws_after_failcount_streambuf&) = delete;
 
     virtual std::basic_streambuf<char>::int_type uflow() override {
         if (local_fail_count < count++) throw std::runtime_error("mock stream failure");
-        if (it == end) return std::basic_streambuf<char>::traits_type::eof();
-        auto ch = *it++;
-        return ch;
+        if (it == str.cend()) return std::basic_streambuf<char>::traits_type::eof();
+        return std::basic_streambuf<char>::traits_type::to_int_type(*it++);
     }
 
     virtual std::basic_streambuf<char>::int_type underflow() override {
         if (local_fail_count < count) throw std::runtime_error("mock stream failure");
-        if (it == end) return std::basic_streambuf<char>::traits_type::eof();
-        return *it;
+        if (it == str.cend()) return std::basic_streambuf<char>::traits_type::eof();
+        return std::basic_streambuf<char>::traits_type::to_int_type(*it);
     }
 
     virtual int_type overflow( int_type ch  ) override {
@@ -58,33 +48,29 @@ public:
         }
         return 1;
     }
-};
 
-template <typename CharT>
-class e_failing_istringstream : public std::basic_istringstream<CharT> {
-    public:
-    template <typename T>
-    e_failing_istringstream(T&& sv) : std::basic_istringstream<CharT>(std::forward<T>(sv)) {}
-    std::istringstream::int_type get() {
-        auto ch = std::istringstream::get();  // Get the next character from the stream
-        if (ch == 'e') {
-            this->setstate(std::ios_base::failbit);  // Set the failbit if 'e' is encountered
+    // tellg() asks for the current offset; a name's compression pointers need it.
+    virtual pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode) override {
+        if (off != 0 || dir != std::ios_base::cur) {
+            return pos_type(off_type(-1));
         }
-        return ch;
-    }
-
-    e_failing_istringstream& operator>>( std::basic_streambuf<CharT, typename std::basic_istringstream<CharT>::traits_type>* sb ) {
-
-        return *this;
+        return pos_type(std::ranges::distance(str.cbegin(), it));
     }
 };
+
+std::string big_endian(uint16_t value)
+{
+    return std::ranges::to<std::string>(std::bit_cast<std::array<char, sizeof value>>(htons(value)));
+}
+
+std::string with_id(std::string_view response, uint16_t id)
+{
+    return big_endian(id) + std::ranges::to<std::string>(response | std::views::drop(sizeof(DNSHeader::id)));
+}
 
 std::string with_id(std::string_view response, const DNSMessage& query)
 {
-    std::string patched {response};
-    patched[0] = static_cast<char>(query.get_header().id >> 8);
-    patched[1] = static_cast<char>(query.get_header().id & 0xFF);
-    return patched;
+    return with_id(response, query.get_header().id);
 }
 
 int main() {
@@ -105,13 +91,8 @@ int main() {
 
                 auto res = question.serialize(ctx, ss);
                 expect(res.has_value()) << std::format("{} what: {}", host, res.has_value() ? "noerror" : res.error().message());
-                expect(eq(std::string_view(buf.cbegin(),
-                                           static_cast<std::streamoff>(ss.tellp()) - sizeof(DNSQuestionBlob)),
-                          dnshost)) << host;
-                DNSQuestionBlob blob;
-                memcpy(&blob, buf.cbegin() + dnshost.size(), sizeof(DNSQuestionBlob));
-                expect(eq(std::to_underlying(blob.qtype), std::byteswap(std::to_underlying(qtype))));
-                expect(eq(std::to_underlying(blob.qclass), std::byteswap(std::to_underlying(qclass))));
+                expect(eq(std::string_view(ss.span()),
+                          std::string(dnshost) + big_endian(std::to_underlying(qtype)) + big_endian(std::to_underlying(qclass)))) << host;
             }
         }
     } | std::vector<std::pair<std::string_view, std::string_view>> {
@@ -137,7 +118,7 @@ int main() {
 
         auto result = question.serialize(ctx, ss);
         expect(!result.has_value());
-        expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(error)));
+        expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
         {"10tenletters10tenletters10tenletters3com"sv, DNSError::HostToDNSHostStreamFailure},
     };
@@ -146,6 +127,7 @@ int main() {
         const auto &[host, error] = in;
         fip::context ctx{39, true};
         DNSQuestion question { std::string(host), { DNSQueryType::A, DNSQueryClass::IN } };
+        // The name fits, so it is the blob's write that the stream throws from.
         std::array <char, 20> buf;
         std::ranges::fill(buf, 0xff);
         std::ospanstream ss(buf);
@@ -153,9 +135,9 @@ int main() {
 
         auto result = question.serialize(ctx, ss);
         expect(!result.has_value());
-        expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(error)));
-    } | std::vector<std::pair<std::string_view, DNSError>> {
-        {"\x0Atenletters\x0Atenletters\x0Atenletters\003com"sv, DNSError::HostToDNSHostStreamUnexpectedException},
+        expect(eq(result.error(), error));
+    } | std::vector<std::pair<std::string_view, std::error_code>> {
+        {"www.example.com"sv, std::make_error_code(std::io_errc::stream)},
     };
 
     "query serialize failures"_test = [] (const auto &in) {
@@ -168,7 +150,7 @@ int main() {
 
         auto result = message.serialize(ss);
         expect(!result.has_value());
-        expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(error)));
+        expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
         {"\x0Atenletters\x0Atenletters\x0Atenletters\003com"sv, DNSError::SerializeStreamFailure},
     };
@@ -184,7 +166,7 @@ int main() {
 
         auto result = message.serialize(ss);
         expect(!result.has_value());
-        expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(error)));
+        expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
         {"\x0Atenletters\x0Atenletters\x0Atenletters\003com"sv, DNSError::SerializeUnexpectedException},
     };
@@ -309,7 +291,7 @@ int main() {
         const auto result = DNSQuestion::deserialize(ctx, ss, jump_table);
         expect(!result.has_value())  << '"' << fuzz << '"';
         if (!result.has_value()) {
-            expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(err))) << '"' << fuzz << '"';
+            expect(eq(result.error(), err)) << '"' << fuzz << '"';
         }
     } | std::vector<std::pair<std::string_view, DNSError>> {
         {"\x01\0\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
@@ -354,7 +336,7 @@ int main() {
         jump_table_t jump_table;
         const auto result = DNSQuestion::deserialize(ctx, ss, jump_table);
         expect(!result.has_value());
-        expect(eq(magic_enum::enum_name(static_cast<DNSError>(result.error().value())), magic_enum::enum_name(DNSError::DeserializeUnexpectedException))) << '"' << in << '"';
+        expect(eq(result.error(), DNSError::DeserializeUnexpectedException)) << '"' << in << '"';
     } | std::vector<std::pair<std::string_view, size_t>> {
         {"\013examplxxxxx\003com\0"sv, 1},
         {"\013axamplxxxxx\012emotionals\0"sv, 13},
@@ -369,34 +351,14 @@ int main() {
         std::ranges::fill(buf, 0xff);
         std::ospanstream ss(buf);
 
-        [[maybe_unused]] auto res = message.serialize(ss);
+        auto res = message.serialize(ss);
+        expect(res.has_value()) << host;
 
-        DNSHeader header_out;
-        DNSQuestion question_out;
-        std::memcpy(&header_out, buf.begin(), sizeof(DNSHeader));
-        std::memcpy(&question_out.blob, buf.begin() + sizeof(DNSHeader) + dnshost.size(), sizeof(DNSQuestionBlob));
-
-        expect(eq(header_out.id, std::byteswap(message.get_header().id)));
-        expect(eq(std::to_underlying(header_out.flags), std::byteswap(std::to_underlying(message.get_header().flags))));
-        expect(eq(header_out.ancount, std::byteswap(message.get_header().ancount)));
-        expect(eq(header_out.nscount, std::byteswap(message.get_header().nscount)));
-        expect(eq(header_out.arcount, std::byteswap(message.get_header().arcount)));
-        expect(eq(header_out.qdcount, std::byteswap(message.get_header().qdcount)));
-        expect(eq(header_out.id, htons(message.get_header().id)));
-        expect(eq(std::to_underlying(header_out.flags), htons(std::to_underlying(message.get_header().flags))));
-        expect(eq(header_out.ancount, htons(message.get_header().ancount)));
-        expect(eq(header_out.nscount, htons(message.get_header().nscount)));
-        expect(eq(header_out.arcount, htons(message.get_header().arcount)));
-        expect(eq(header_out.qdcount, htons(message.get_header().qdcount)));
-
-        expect(eq(std::string_view(buf.begin() + sizeof(DNSHeader), dnshost.size()), dnshost));
-
-        expect(eq(std::to_underlying(question_out.blob.qclass), std::byteswap(std::to_underlying(message.get_questions().begin()->blob.qclass))));
-        expect(eq(std::to_underlying(question_out.blob.qtype), std::byteswap(std::to_underlying(message.get_questions().begin()->blob.qtype))));
-        expect(eq(std::to_underlying(question_out.blob.qclass), htons(std::to_underlying(message.get_questions().begin()->blob.qclass))));
-        expect(eq(std::to_underlying(question_out.blob.qtype), htons(std::to_underlying(message.get_questions().begin()->blob.qtype))));
-
-
+        const auto header = message.get_header();
+        expect(eq(std::string_view(ss.span()),
+                  big_endian(header.id) + big_endian(std::to_underlying(header.flags)) + big_endian(header.qdcount)
+                  + big_endian(header.ancount) + big_endian(header.nscount) + big_endian(header.arcount)
+                  + std::string(dnshost) + big_endian(std::to_underlying(DNSQueryType::A)) + big_endian(std::to_underlying(DNSQueryClass::IN)))) << host;
     } | std::vector<std::pair<std::string_view, std::string_view>> {
         {"www.example.com"sv,                         "\x03www\007example\003com\0"sv},
         {"sub.domain.com"sv,                          "\003sub\006domain\003com\0"sv},
@@ -469,11 +431,7 @@ int main() {
         DNSHeader header { 0xee, DNSHeaderFlags::RecursionDesired, 1, 0, 0, 0 };
         expect(eq("DNSHeader { ID: 0xEE, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 0, Authorities: 0, Additionals: 0 }"sv, std::format("{}", header)));
 
-        RData_A a {};
-        inet_pton(AF_INET, "39.139.239.39", &a.ipv4_address);
-        if constexpr (std::endian::native != std::endian::big) {
-            a.ipv4_address.s_addr = std::byteswap(a.ipv4_address.s_addr);
-        }
+        RData_A a { in_addr { asio::ip::make_address_v4("39.139.239.39").to_uint() } };
         expect(eq("RData_A { ipv4_address: 39.139.239.39 }"sv, std::format("{}", a)));
         RData_AAAA aaaa {};
         inet_pton(AF_INET6, "fe80::aad8:4d9f:1628:34b1", &aaaa.ipv6_address);
@@ -506,7 +464,7 @@ int main() {
         auto message = DNSMessage::deserialize(ctx, ss);
         expect(message.has_value());
         if (message) {
-            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 0, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 1232, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 12, EDNS0_Option { OptionCode: COOKIE, OptionDataSize: 8, Data: { 0x19C4DEFC2FE075D } } } }"sv, std::format("{}", *message)));
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 0, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 1232, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 12, EDNS0_Option { OptionCode: COOKIE, OptionDataSize: 8, Data: { 0x19C4DEFC2FE0075D } } } }"sv, std::format("{}", *message)));
         } else {
             expect(eq("meow!"sv, message.error().message()));
         }
@@ -564,25 +522,61 @@ int main() {
     // A server can't send names past the limits, so these grow the real
     // captures by one byte.
     "dig read past size limits"_test = [] (const auto& mutation) {
-        const auto& [buf, err] = mutation;
+        const auto& [capture, from, to, err] = mutation;
+        std::string buf {capture};
+        const auto anchor = std::ranges::search(buf, from);
+        expect(fatal(!anchor.empty())) << from;
+        buf.replace(anchor.begin(), anchor.end(), to);
         fip::context ctx(39, true);
         std::ispanstream ss {buf};
 
         auto message = DNSMessage::deserialize(ctx, ss);
         expect(!message.has_value());
         if (!message) {
-            expect(eq(magic_enum::enum_name(static_cast<DNSError>(message.error().value())), magic_enum::enum_name(err)));
+            expect(eq(message.error(), err));
+        }
+    } | std::vector<std::tuple<std::string_view, std::string_view, std::string_view, DNSError>> {
+        // 64-byte label.
+        {max_label_response, "?the"sv, "@ethe"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
+        // 256-octet question name.
+        {max_name_response, "41-2-3-4-"sv, "5b1-2-3-4-"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
+        // Answer name of one label plus a pointer to the 255-octet question name.
+        {max_name_response, "\300\f"sv, "\1x\300\f"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
+    };
+
+    "serialize at size limits"_test = [] (const auto& name) {
+        fip::context ctx(39, true);
+        DNSMessage message {ctx};
+        message.add_question(name, DNSQueryType::A);
+        std::array<char, DNSBufferSize> buf;
+        std::spanstream ss(buf);
+
+        expect(message.serialize(ss).has_value()) << name;
+        auto deserialized = DNSMessage::deserialize(ctx, ss);
+        expect(deserialized.has_value()) << name;
+        if (deserialized) {
+            expect(eq(name, deserialized->get_questions().front().qname));
+        }
+    } | std::vector {max_label_name, max_name_name};
+
+    "serialize past size limits"_test = [] (const auto& mutation) {
+        const auto& [name, err] = mutation;
+        fip::context ctx(39, true);
+        DNSMessage message {ctx};
+        message.add_question(name, DNSQueryType::A);
+        std::array<char, DNSBufferSize> buf;
+        std::ospanstream ss(buf);
+
+        const auto serialized = message.serialize(ss);
+        expect(!serialized.has_value()) << name;
+        if (!serialized) {
+            expect(eq(serialized.error(), err)) << name;
         }
     } | std::vector<std::pair<std::string, DNSError>> {
         // 64-byte label.
-        {std::string(max_label_response).replace(max_label_response.find("?the"sv), 1, "@e"sv),
-         DNSError::DNSHostToHostExcessiveHostLabelSize},
-        // 256-octet question name.
-        {std::string(max_name_response).replace(max_name_response.find("41-2-3-4-"sv), 1, "5b"sv),
-         DNSError::DNSHostToHostExcessiveHostnameSize},
-        // Answer name of one label plus a pointer to the 255-octet question name.
-        {std::string(max_name_response).replace(max_name_response.rfind("\300\f"sv), 2, "\1x\300\f"sv),
-         DNSError::DNSHostToHostExcessiveHostnameSize},
+        {std::format("e{}", max_label_name), DNSError::HostToDNSHostExcessiveHostLabelSize},
+        // 254 text characters, a 256-octet name.
+        {std::format("{}x", max_name_name), DNSError::HostToDNSHostExcessiveHostnameSize},
     };
 
     "edns nonzero ttl"_test = [] {
@@ -652,7 +646,7 @@ int main() {
         auto message = DNSMessage::deserialize(ctx, ss);
         expect(eq(message.has_value(), false)) << buf;
         if (!message) {
-            expect(eq(magic_enum::enum_name(static_cast<DNSError>(message.error().value())), magic_enum::enum_name(DNSError::DeserializePrematureEOF))) << buf;
+            expect(eq(message.error(), DNSError::DeserializePrematureEOF)) << buf;
         }
     } | std::vector<std::string_view> {
         "\314\347\204\0\0\1\0\1\0\0\0\0\3o-o\6myaddr\1l\6google\3com\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\16\017198.51.100.39"sv,
@@ -716,7 +710,7 @@ int main() {
         auto message = DNSMessage::deserialize(ctx, ss);
         expect(message.has_value());
         if (message) {
-            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: RecursionAvailable|RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, DNSResourceRecord { Name: myip.opendns.com, Type: A, Class: IN, TTL: 0, RDataLength: 4, RData_A { ipv4_address: 72.110.80.89 } }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 4096, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 8, EDNS0_Option { OptionCode: 20292, OptionDataSize: 4, Data: { 0x1234 } } } }"sv, std::format("{}", *message)));
+            expect(eq("DNSMessage { DNSHeader { ID: 0xCCE7, DNSHeaderFlags { QR: Response, Flags: RecursionAvailable|RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 1 }, DNSQuestion { Name: myip.opendns.com, Type: A, Class: IN }, DNSResourceRecord { Name: myip.opendns.com, Type: A, Class: IN, TTL: 0, RDataLength: 4, RData_A { ipv4_address: 72.110.80.89 } }, EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 4096, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 8, EDNS0_Option { OptionCode: 20292, OptionDataSize: 4, Data: { 0x01020304 } } } }"sv, std::format("{}", *message)));
         }
     };
 
@@ -777,9 +771,8 @@ int main() {
 
         DNSMessage query {ctx};
         query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
-        auto wrong_id = with_id(response, query);
-        wrong_id[1] ^= 1;
-        expect(resolver.parse_dns_response(wrong_id, query, fip::AddressFamily::V4) == mismatched);
+        const auto other_id = static_cast<uint16_t>(~query.get_header().id);
+        expect(resolver.parse_dns_response(with_id(response, other_id), query, fip::AddressFamily::V4) == mismatched);
 
         DNSMessage other_name {ctx};
         other_name.add_question("whoami.ds.akahelp.org", DNSQueryType::TXT);

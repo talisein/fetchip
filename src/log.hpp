@@ -21,37 +21,6 @@ namespace fip
         void set_verbose(bool verbose) { is_verbose = verbose; };
 
         template <typename Format, typename... Params>
-        constexpr void perror(Format&& format, Params&&... params) const {
-            auto msg = std::vformat(std::forward<Format>(format), std::make_format_args(params...));
-            if (!is_testing) {
-                sd_journal_perror(msg.c_str());
-            }
-
-            if (is_verbose) {
-                ::perror(msg.c_str());
-            }
-
-            if (hook_perror) {
-                hook_perror(msg);
-            }
-        }
-
-        template <typename Message>
-        constexpr void perror(Message&& msg) const {
-            if (!is_testing) {
-                sd_journal_perror(msg);
-            }
-
-            if (is_verbose) {
-                ::perror(msg);
-            }
-
-            if (hook_perror) {
-                hook_perror(std::forward<Message>(msg));
-            }
-        }
-
-        template <typename Format, typename... Params>
         constexpr void log(int priority, Format&& format, Params&&... params) const {
             if (!journals(priority) && !is_verbose && !hook_print) {
                 return;
@@ -112,7 +81,6 @@ namespace fip
         }
 
         std::function<void (const std::string_view&)> hook_print;
-        std::function<void (const std::string_view&)> hook_perror;
 
     private:
         bool journals(int priority) const {

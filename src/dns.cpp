@@ -56,14 +56,32 @@ dns_exception_handler(fip::context& ctx,
 
 
 namespace {
+    // An ostreambuf_iterator records a short write only in itself, never in the stream.
+    void store_bytes(std::ranges::input_range auto&& bytes, std::ostream& os) {
+        if (std::ranges::copy(bytes, std::ostreambuf_iterator(os)).out.failed() || os.fail()) {
+            throw std::system_error(make_error_code(DNSError::SerializeStreamFailure), "store_bytes()");
+        }
+    }
+
     // Function to transform a regular host name to its DNS-encoded form
     std::expected<void, std::error_code>
     host_to_dnshost(fip::context& ctx, std::string_view host, std::ostream& os) {
         using namespace std::literals;
 
-        for (const auto &subrange : std::views::split(host, "."sv)) {
-            os.put(static_cast<uint8_t>(std::ranges::size(subrange)));
-            std::ranges::copy(subrange, std::ostreambuf_iterator(os));
+        // 253 text characters is the 255-octet wire limit.
+        if (253 < host.size()) {
+            ctx.log.debug("Excessive hostname size {} > 253: '{}'", host.size(), host);
+            return std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostnameSize));
+        }
+        for (const auto &label : std::views::split(host, "."sv)) {
+            if (63 < std::ranges::size(label)) {
+                ctx.log.debug("Excessive host label size {} > 63: '{}'", std::ranges::size(label), std::string_view(label));
+                return std::unexpected(make_error_code(DNSError::HostToDNSHostExcessiveHostLabelSize));
+            }
+            os.put(static_cast<char>(std::ranges::size(label)));
+            if (std::ranges::copy(label, std::ostreambuf_iterator(os)).out.failed() || os.fail()) {
+                return std::unexpected(make_error_code(DNSError::HostToDNSHostStreamFailure));
+            }
         }
         os.put('\0');
 
@@ -88,18 +106,36 @@ namespace {
         return static_cast<std::streamoff>(x);
     }
 
+    // The stream's position as a compression pointer names it; tellg() answers -1 once the stream has failed.
+    std::expected<uint16_t, std::error_code> wire_offset(std::istream& is) {
+        const std::streamoff pos = is.tellg();
+        if (pos < 0) {
+            return std::unexpected(handle_eof(is));
+        }
+        if (std::numeric_limits<uint16_t>::max() < pos) {
+            return std::unexpected(make_error_code(DNSError::DNSHostToHostStreamFailure));
+        }
+        return static_cast<uint16_t>(pos);
+    }
+
     std::expected<std::string, std::error_code>
     dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) {
         std::ostringstream hostname;
         auto os_iter = std::ostreambuf_iterator(hostname);
         auto view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
-        const uint16_t start_pos = is.tellg();
+        const auto start_pos = wire_offset(is);
+        if (!start_pos) {
+            return std::unexpected(start_pos.error());
+        }
         // Where the caller's parse continues: just past the first compression
         // pointer, since a pointer ends the name on the wire.
-        std::optional<std::streampos> resume;
+        std::optional<uint16_t> resume;
 
         do {
-            const auto label_pos = static_cast<uint16_t>(is.tellg());
+            const auto label_pos = wire_offset(is);
+            if (!label_pos) {
+                return std::unexpected(label_pos.error());
+            }
             uint8_t label_size = 0;
             if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &label_size);
                 copy_result.out == &label_size)
@@ -112,7 +148,7 @@ namespace {
                 auto res = hostname.str();
                 if (0 < res.size()) res.pop_back(); // Remove trailing .
                 if (resume) is.seekg(*resume);
-                auto [it, _] = jump_table.emplace(start_pos, std::move(res));
+                auto [it, _] = jump_table.emplace(*start_pos, std::move(res));
                 return it->second;
             }
 
@@ -136,17 +172,23 @@ namespace {
                     }
 
                     if (resume) is.seekg(*resume);
-                    auto [res_it, _] = jump_table.emplace(start_pos, std::move(res));
+                    auto [res_it, _] = jump_table.emplace(*start_pos, std::move(res));
                     return res_it->second;
                 }
 
                 // A pointer may only reference a prior occurrence, so each jump
                 // moves strictly backward and a chain of them must terminate.
-                if (jump >= label_pos) {
-                    ctx.log.debug("Compression pointer at {} jumps forward to {}", label_pos, jump);
+                if (jump >= *label_pos) {
+                    ctx.log.debug("Compression pointer at {} jumps forward to {}", *label_pos, jump);
                     return std::unexpected(make_error_code(DNSError::DNSHostToHostBadCompressionPointer));
                 }
-                if (!resume) resume = is.tellg();
+                if (!resume) {
+                    const auto after_pointer = wire_offset(is);
+                    if (!after_pointer) {
+                        return std::unexpected(after_pointer.error());
+                    }
+                    resume = *after_pointer;
+                }
                 is.seekg(jump);
                 view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
                 continue;
@@ -186,7 +228,7 @@ RData_OPT::serialize(fip::context& ctx, std::ostream &os) const noexcept
     try {
         for (const auto& option : options) {
             blob::store(storage, option.blob, blob::tag<fetchip_construction_policy>());
-            std::ranges::copy(option.data, std::ostreambuf_iterator(os));
+            store_bytes(option.data, os);
         }
     } catch (...) {
         return std::unexpected(dns_exception_handler(ctx, DNSError::SerializeUnexpectedException));
@@ -250,25 +292,21 @@ DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
         }
         blob::store(storage, blob, blob::tag<fetchip_construction_policy>());
 
-        RData_AAAA aaaa;
-        RData_TXT txt;
         switch (blob.type) {
             case DNSQueryType::A:
                 blob::store(storage, std::get<RData_A>(rdata), blob::tag<fetchip_construction_policy>());
                 break;
             case DNSQueryType::AAAA:
-                aaaa = std::get<RData_AAAA>(rdata);
-                std::ranges::copy(std::span<uint8_t, 16>(aaaa.ipv6_address.s6_addr), std::ostreambuf_iterator(os));
+                store_bytes(std::get<RData_AAAA>(rdata).ipv6_address.s6_addr, os);
                 break;
             case DNSQueryType::TXT:
-                txt = std::get<RData_TXT>(rdata);
-                for (const auto& text : txt.strings) {
+                for (const auto& text : std::get<RData_TXT>(rdata).strings) {
                     if (text.size() > std::numeric_limits<uint8_t>::max()) {
                         ctx.log.debug("TXT string too long to serialize: {} bytes", text.size());
                         return std::unexpected(make_error_code(DNSError::SerializeStreamFailure));
                     }
                     os.put(static_cast<char>(text.size()));
-                    std::ranges::copy(text, std::ostreambuf_iterator(os));
+                    store_bytes(text, os);
                 }
                 break;
             default:

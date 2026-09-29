@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <format>
 #include <ranges>
 #include "dns.hpp"
@@ -56,14 +55,7 @@ struct std::formatter<RData_A> {
     }
     template <typename FormatContext>
     auto format(RData_A p, FormatContext& ctx) const {
-        std::array<char, INET_ADDRSTRLEN + 1> buf;
-        const in_addr network_order { std::endian::native == std::endian::big ? p.ipv4_address.s_addr : std::byteswap(p.ipv4_address.s_addr) };
-        auto res = inet_ntop(AF_INET, &network_order, buf.data(), buf.size());
-        if (res) {
-            return format_to(ctx.out(), "RData_A {{ ipv4_address: {} }}"sv, buf.begin());
-        } else {
-            return format_to(ctx.out(), "RData_A {{ ipv4_address: (Error: {}) }}"sv, strerror(errno));
-        }
+        return format_to(ctx.out(), "RData_A {{ ipv4_address: {} }}"sv, asio::ip::address_v4(p.ipv4_address.s_addr).to_string());
     }
 };
 
@@ -74,13 +66,7 @@ struct std::formatter<RData_AAAA> {
     }
     template <typename FormatContext>
     auto format(const RData_AAAA& p, FormatContext& ctx) const {
-        std::array<char, INET6_ADDRSTRLEN + 1> buf;
-        auto res = inet_ntop(AF_INET6, &p.ipv6_address, buf.data(), buf.size());
-        if (res) {
-            return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: {} }}"sv, buf.begin());
-        } else {
-            return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: (Error: {}) }}"sv, strerror(errno));
-        }
+        return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: {} }}"sv, asio::ip::address_v6(std::to_array(p.ipv6_address.s6_addr)).to_string());
     }
 };
 
@@ -92,11 +78,11 @@ struct std::formatter<RData_OPT> {
     template <typename FormatContext>
     auto format(const RData_OPT& p, FormatContext& ctx) const {
         auto out_iter = ctx.out();
-        for (auto option : p.options) {
+        for (const auto& option : p.options) {
             out_iter = format_to(out_iter, ", EDNS0_Option {{ OptionCode: {}, OptionDataSize: {}, Data: {{ 0x",
                                  enum_name_or_value(option.blob.option_code), option.blob.data_size);
-            for (auto c : option.data) {
-                out_iter = format_to(out_iter, "{:X}", c);
+            for (const auto c : option.data) {
+                out_iter = format_to(out_iter, "{:02X}", c);
             }
             out_iter = format_to(out_iter, " }} }}"); // option.data
         }

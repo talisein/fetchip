@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include "dns.hpp"
 #include <blobify/blobify.hpp>
 
@@ -8,13 +9,6 @@ constexpr auto properties(blob::tag<DNSHeader>) {
 
     props.expected_size = 12; // 16 * 6 / 8
     std::apply([](auto&... member){((member.endianness = std::endian::big), ...);}, props.members);
-
-    props.member_at<0>().endianness = std::endian::big;
-    props.member_at<1>().endianness = std::endian::big;
-    props.member_at<2>().endianness = std::endian::big;
-    props.member_at<3>().endianness = std::endian::big;
-    props.member_at<4>().endianness = std::endian::big;
-    props.member_at<5>().endianness = std::endian::big;
 
     return props;
 }

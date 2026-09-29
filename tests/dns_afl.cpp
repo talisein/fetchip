@@ -24,7 +24,7 @@
 
 __AFL_FUZZ_INIT();
 
-int main(int argc, char *argv[]) {
+int main() {
 #ifdef __AFL_HAVE_MANUAL_CONTROL
   __AFL_INIT();
 #endif
@@ -39,13 +39,12 @@ int main(int argc, char *argv[]) {
 
   while (__AFL_LOOP(10000)) {
 
-    ssize_t len = __AFL_FUZZ_TESTCASE_LEN;  // don't use the macro directly in a
-                                        // call!
+    const std::size_t len = __AFL_FUZZ_TESTCASE_LEN;  // don't use the macro directly in a
+                                                      // call!
 
     auto s = std::span<char>(reinterpret_cast<char*>(buf), len);
     std::ispanstream ss(s);
 
-    fip::context ctx(true);
     jump_table_t jump_table;
     auto res = DNSQuestion::deserialize(ctx, ss, jump_table);
     if (res) {
