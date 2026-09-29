@@ -8,7 +8,7 @@ With neither flag, `ctx.requested_family` is `Any`:
 - `query_http_public_ip` skips its family check.
 - `IPConsensus` counts every answer as a vote, whatever its family.
 
-A whoami service reports the address the query arrived from, so on a dual-stack host some services report the IPv4 address and some the IPv6 one. `whoami.akamai.net` (`A_ONLY`) always reports IPv4. The others depend on which family connected first.
+A whoami service reports the address the query arrived from, so on a dual-stack host some services report the IPv4 address and some the IPv6 one. `DNS_A` entries always report IPv4 and `DNS_AAAA` entries IPv6; opendns and quad9 have one of each, so both of their families can be drawn and vote. The TXT and HTTP services depend on which family connected first.
 
 Consequences:
 

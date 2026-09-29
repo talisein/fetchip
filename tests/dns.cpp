@@ -577,28 +577,18 @@ int main() {
         expect(resolver.parse_dns_response(cname_only, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
-    "query type for transport"_test = [] {
-        using enum DNSProviderAcceptedQueryType;
+    "query answers family"_test = [] {
+        using enum DNSQueryType;
         using fip::AddressFamily;
-        expect(query_type_for(A_OR_AAAA, AddressFamily::V4) == DNSQueryType::A);
-        expect(query_type_for(A_OR_AAAA, AddressFamily::V6) == DNSQueryType::AAAA);
-        expect(query_type_for(A_ONLY, AddressFamily::V4) == DNSQueryType::A);
-        expect(query_type_for(A_ONLY, AddressFamily::V6) == std::nullopt);
-        expect(query_type_for(AAAA_ONLY, AddressFamily::V4) == std::nullopt);
-        expect(query_type_for(AAAA_ONLY, AddressFamily::V6) == DNSQueryType::AAAA);
-        expect(query_type_for(TXT, AddressFamily::V4) == DNSQueryType::TXT);
-        expect(query_type_for(TXT, AddressFamily::V6) == DNSQueryType::TXT);
-        expect(query_type_for(TXT, AddressFamily::Any) == std::nullopt);
-    };
-
-    "provider supports family"_test = [] {
-        using enum DNSProviderAcceptedQueryType;
-        using fip::AddressFamily;
-        expect(provider_supports(A_ONLY, AddressFamily::Any));
-        expect(provider_supports(A_ONLY, AddressFamily::V4));
-        expect(!provider_supports(A_ONLY, AddressFamily::V6));
-        expect(!provider_supports(AAAA_ONLY, AddressFamily::V4));
-        expect(provider_supports(A_OR_AAAA, AddressFamily::V6));
-        expect(provider_supports(TXT, AddressFamily::V6));
+        expect(query_answers_family(A, AddressFamily::Any));
+        expect(query_answers_family(A, AddressFamily::V4));
+        expect(!query_answers_family(A, AddressFamily::V6));
+        expect(query_answers_family(AAAA, AddressFamily::Any));
+        expect(!query_answers_family(AAAA, AddressFamily::V4));
+        expect(query_answers_family(AAAA, AddressFamily::V6));
+        expect(query_answers_family(TXT, AddressFamily::Any));
+        expect(query_answers_family(TXT, AddressFamily::V4));
+        expect(query_answers_family(TXT, AddressFamily::V6));
+        expect(!query_answers_family(CNAME, AddressFamily::V4));
     };
 }

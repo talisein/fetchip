@@ -7,21 +7,11 @@
 #include "context.hpp"
 #include "dns.hpp"
 
-// What a whoami provider answers. It reports the address the query arrived from, so the transport family decides the answer family.
-enum class DNSProviderAcceptedQueryType {
-    A_OR_AAAA,
-    A_ONLY,
-    AAAA_ONLY,
-    TXT,
-};
-
 // The family of a textual IP address, or nullopt if it is not one.
 std::optional<fip::AddressFamily> address_family_of(std::string_view text);
 
-bool provider_supports(DNSProviderAcceptedQueryType provider, fip::AddressFamily family);
-
-// The wire query to send over a transport, or nullopt if the provider cannot answer over it.
-std::optional<DNSQueryType> query_type_for(DNSProviderAcceptedQueryType provider, fip::AddressFamily transport);
+// A whoami provider reports the address the query arrived from, so an A query must travel over IPv4 and an AAAA over IPv6.
+bool query_answers_family(DNSQueryType query, fip::AddressFamily family);
 
 class DNSResolver
 {
@@ -29,7 +19,7 @@ public:
     DNSResolver(fip::context &ctx) : ctx(ctx) { };
 
     asio::awaitable<std::expected<std::string, std::error_code>>
-    query_dns_public_ip(std::string_view host, std::string_view resolver, DNSProviderAcceptedQueryType provider);
+    query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query);
 
     // The address in a whoami response received over transport.
     std::expected<std::string, std::error_code>

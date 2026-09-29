@@ -24,29 +24,18 @@ std::optional<fip::AddressFamily> address_family_of(std::string_view text)
     return std::nullopt;
 }
 
-bool provider_supports(DNSProviderAcceptedQueryType provider, fip::AddressFamily family)
+bool query_answers_family(DNSQueryType query, fip::AddressFamily family)
 {
-    switch (provider) {
-    case DNSProviderAcceptedQueryType::A_ONLY:
+    switch (query) {
+    case DNSQueryType::A:
         return family != fip::AddressFamily::V6;
-    case DNSProviderAcceptedQueryType::AAAA_ONLY:
+    case DNSQueryType::AAAA:
         return family != fip::AddressFamily::V4;
-    case DNSProviderAcceptedQueryType::A_OR_AAAA:
-    case DNSProviderAcceptedQueryType::TXT:
+    case DNSQueryType::TXT:
         return true;
+    default:
+        return false;
     }
-    return false;
-}
-
-std::optional<DNSQueryType> query_type_for(DNSProviderAcceptedQueryType provider, fip::AddressFamily transport)
-{
-    if (transport == fip::AddressFamily::Any || !provider_supports(provider, transport)) {
-        return std::nullopt;
-    }
-    if (provider == DNSProviderAcceptedQueryType::TXT) {
-        return DNSQueryType::TXT;
-    }
-    return transport == fip::AddressFamily::V4 ? DNSQueryType::A : DNSQueryType::AAAA;
 }
 
 namespace {
@@ -264,7 +253,7 @@ DNSResolver::get_resolver_address(std::string_view resolver_name)
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
-DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSProviderAcceptedQueryType provider) {
+DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query) {
     auto resolver_addrs = co_await get_resolver_address(resolver);
     if (!resolver_addrs) {
         co_return std::unexpected(resolver_addrs.error());
@@ -274,10 +263,9 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
 
     for (const auto& resolver_addr : *resolver_addrs) {
         const auto transport = family_of(resolver_addr.endpoint());
-        const auto query_type = query_type_for(provider, transport);
-        if (!query_type) {
+        if (!query_answers_family(query, transport)) {
             last_error = make_error_code(DNSError::DNSResolverWrongFamily);
-            ctx.log.debug("Skipping {}: {} cannot answer over {}", resolver_addr.endpoint().address().to_string(), magic_enum::enum_name(provider), magic_enum::enum_name(transport));
+            ctx.log.debug("Skipping {}: {} cannot answer over {}", resolver_addr.endpoint().address().to_string(), magic_enum::enum_name(query), magic_enum::enum_name(transport));
             continue;
         }
 
@@ -288,7 +276,7 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
             continue;
         }
 
-        auto sent_query = co_await send_dns_query(*sock, host, *query_type);
+        auto sent_query = co_await send_dns_query(*sock, host, query);
         if (!sent_query) {
             last_error = sent_query.error();
             ctx.log.debug("Looping: {}", last_error.message());

@@ -25,47 +25,66 @@ using namespace std::literals;
 enum class ServiceType {
     HTTP,
     HTTPS,
-    DNS,
+    DNS_A,
+    DNS_AAAA,
+    DNS_TXT,
 };
 
+// The wire query a DNS service sends, or nullopt for an HTTP one.
+constexpr std::optional<DNSQueryType> dns_query_type(ServiceType type)
+{
+    switch (type) {
+    case ServiceType::DNS_A:
+        return DNSQueryType::A;
+    case ServiceType::DNS_AAAA:
+        return DNSQueryType::AAAA;
+    case ServiceType::DNS_TXT:
+        return DNSQueryType::TXT;
+    case ServiceType::HTTP:
+    case ServiceType::HTTPS:
+        break;
+    }
+    return std::nullopt;
+}
+
 struct Service {
-    // Shared by the HTTP and HTTPS entries for one provider; -i picks between them.
+    // Shared by the HTTP and HTTPS entries for one provider, which -i picks between, and by the DNS_A and DNS_AAAA entries, which -4 or -6 picks between.
     std::string_view name;
     std::string_view address;
     std::optional<std::string_view> path;
     std::optional<std::string_view> resolver;
-    std::optional<DNSProviderAcceptedQueryType> query_type;
     ServiceType type;
 };
 
 constexpr auto services = std::to_array<Service>({
-        {"ifconfig.me", "http://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"ifconfig.me", "https://ifconfig.me", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"icanhazip", "http://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"icanhazip", "https://icanhazip.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"ipecho", "http://ipecho.net", "/plain", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"ipecho", "https://ipecho.net", "/plain", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"ident.me", "http://ident.me", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"ident.me", "https://ident.me", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"dnsomatic", "http://myip.dnsomatic.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"dnsomatic", "https://myip.dnsomatic.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"amazon", "http://checkip.amazonaws.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"amazon", "https://checkip.amazonaws.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"akamai", "http://whatismyip.akamai.com", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"akamai", "https://whatismyip.akamai.com", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"ipinfo", "http://ipinfo.io", "/ip", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"ipinfo", "https://ipinfo.io", "/ip", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"ipify", "http://api64.ipify.org", "/", std::nullopt, std::nullopt, ServiceType::HTTP},
-        {"ipify", "https://api64.ipify.org", "/", std::nullopt, std::nullopt, ServiceType::HTTPS},
-        {"opendns", "myip.opendns.com", std::nullopt, "resolver1.opendns.com", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
-        {"akamai-dns", "whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", DNSProviderAcceptedQueryType::A_ONLY, ServiceType::DNS},
-        {"google", "o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", DNSProviderAcceptedQueryType::TXT, ServiceType::DNS},
-        {"quad9", "whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", DNSProviderAcceptedQueryType::A_OR_AAAA, ServiceType::DNS},
-        {"akahelp", "whoami.ds.akahelp.net", std::nullopt, "a20-65.akam.net", DNSProviderAcceptedQueryType::TXT, ServiceType::DNS},
+        {"ifconfig.me", "http://ifconfig.me", "/ip", std::nullopt, ServiceType::HTTP},
+        {"ifconfig.me", "https://ifconfig.me", "/ip", std::nullopt, ServiceType::HTTPS},
+        {"icanhazip", "http://icanhazip.com", "/", std::nullopt, ServiceType::HTTP},
+        {"icanhazip", "https://icanhazip.com", "/", std::nullopt, ServiceType::HTTPS},
+        {"ipecho", "http://ipecho.net", "/plain", std::nullopt, ServiceType::HTTP},
+        {"ipecho", "https://ipecho.net", "/plain", std::nullopt, ServiceType::HTTPS},
+        {"ident.me", "http://ident.me", "/", std::nullopt, ServiceType::HTTP},
+        {"ident.me", "https://ident.me", "/", std::nullopt, ServiceType::HTTPS},
+        {"dnsomatic", "http://myip.dnsomatic.com", "/", std::nullopt, ServiceType::HTTP},
+        {"dnsomatic", "https://myip.dnsomatic.com", "/", std::nullopt, ServiceType::HTTPS},
+        {"amazon", "http://checkip.amazonaws.com", "/", std::nullopt, ServiceType::HTTP},
+        {"amazon", "https://checkip.amazonaws.com", "/", std::nullopt, ServiceType::HTTPS},
+        {"akamai", "http://whatismyip.akamai.com", "/", std::nullopt, ServiceType::HTTP},
+        {"akamai", "https://whatismyip.akamai.com", "/", std::nullopt, ServiceType::HTTPS},
+        {"ipinfo", "http://ipinfo.io", "/ip", std::nullopt, ServiceType::HTTP},
+        {"ipinfo", "https://ipinfo.io", "/ip", std::nullopt, ServiceType::HTTPS},
+        {"ipify", "http://api64.ipify.org", "/", std::nullopt, ServiceType::HTTP},
+        {"ipify", "https://api64.ipify.org", "/", std::nullopt, ServiceType::HTTPS},
+        {"opendns", "myip.opendns.com", std::nullopt, "resolver1.opendns.com", ServiceType::DNS_A},
+        {"opendns", "myip.opendns.com", std::nullopt, "resolver1.opendns.com", ServiceType::DNS_AAAA},
+        {"akamai-dns", "whoami.akamai.net", std::nullopt, "ns1-1.akamaitech.net", ServiceType::DNS_A},
+        {"google", "o-o.myaddr.l.google.com", std::nullopt, "ns1.google.com", ServiceType::DNS_TXT},
+        {"quad9", "whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", ServiceType::DNS_A},
+        {"quad9", "whatismyip.on.quad9.net", std::nullopt, "dns.quad9.net", ServiceType::DNS_AAAA},
+        {"akahelp", "whoami.ds.akahelp.net", std::nullopt, "a20-65.akam.net", ServiceType::DNS_TXT},
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
-static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.resolver.has_value(); else return true; }) );
-static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::DNS) return s.query_type.has_value(); else return true; }) );
+static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return s.resolver.has_value(); else return true; }) );
 
 asio::awaitable<std::expected<std::string, std::error_code>>
 query_http_public_ip(fip::context& ctx, Service service)
@@ -95,9 +114,9 @@ query_public_ip(fip::context &ctx, Service service)
 {
     if (service.type == ServiceType::HTTP || service.type == ServiceType::HTTPS) {
         co_return co_await query_http_public_ip(ctx, service);
-    } else if (service.type == ServiceType::DNS) {
+    } else if (auto query = dns_query_type(service.type)) {
         DNSResolver resolver {ctx};
-        co_return co_await resolver.query_dns_public_ip(service.address, *service.resolver, *service.query_type);
+        co_return co_await resolver.query_dns_public_ip(service.address, *service.resolver, *query);
     } else {
         ctx.log.debug("Unknown service type {}", magic_enum::enum_integer(service.type));
         co_return std::unexpected(make_error_code(FetchError::UnknownServiceType));
@@ -108,7 +127,7 @@ int main(int argc, char* argv[]) {
     cxxopts::Options options("fetchip", "Retrieve public IP from random service");
     options.add_options()
         ("h,help", "Show help")
-        ("s,service", "Service type (HTTP or DNS)", cxxopts::value<std::string>())
+        ("s,service", "Service type (HTTP, HTTPS, DNS, DNS_A, DNS_AAAA or DNS_TXT)", cxxopts::value<std::string>())
         ("n,name", "Ask only the named service and print its answer, without consensus", cxxopts::value<std::string>())
         ("i,insecure", "Use HTTP instead of HTTPS", cxxopts::value<bool>()->default_value("false"))
         ("v,verbose", "Print verbose output to stderr")
@@ -125,11 +144,15 @@ int main(int argc, char* argv[]) {
         }
 
         std::optional<ServiceType> selectedType;
+        // -s DNS selects every DNS_* type.
+        bool selectedDNS = false;
 
         if (result.count("service")) {
-            selectedType = magic_enum::enum_cast<ServiceType>(result["service"].as<std::string>(), magic_enum::case_insensitive);
-            if (!selectedType) {
-                std::cerr << std::format("Unknown service type '{}'. Choose from ", result["service"].as<std::string>());
+            const auto service = result["service"].as<std::string>();
+            selectedDNS = std::ranges::equal(service, "DNS"sv, {}, [](unsigned char c) { return std::toupper(c); });
+            selectedType = magic_enum::enum_cast<ServiceType>(service, magic_enum::case_insensitive);
+            if (!selectedDNS && !selectedType) {
+                std::cerr << std::format("Unknown service type '{}'. Choose from DNS, ", service);
                 std::ranges::for_each(magic_enum::enum_names<ServiceType>()
                                       | std::views::join_with(", "sv),
                                       [](const auto &sv) {
@@ -175,14 +198,17 @@ int main(int argc, char* argv[]) {
                 return false;
             return true;
         });
-        auto filteredServices = std::ranges::views::filter(secureServices, [selectedType](const auto& service) {
-            if (selectedType) {
+        auto filteredServices = std::ranges::views::filter(secureServices, [selectedType, selectedDNS](const auto& service) {
+            if (selectedDNS) {
+                return dns_query_type(service.type).has_value();
+            } else if (selectedType) {
                 return service.type == *selectedType;
             } else {
                 return true;
             }
         }) | std::views::filter([family](const auto& service) {
-            return !service.query_type || provider_supports(*service.query_type, family);
+            const auto query = dns_query_type(service.type);
+            return !query || query_answers_family(*query, family);
         }) | std::views::filter([&selectedName](const auto& service) {
             return !selectedName || service.name == *selectedName;
         });
