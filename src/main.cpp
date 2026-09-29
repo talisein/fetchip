@@ -86,6 +86,24 @@ constexpr auto services = std::to_array<Service>({
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return s.resolver.has_value(); else return true; }) );
 
+// What -s accepts: DNS for every DNS_* type, then each type by name.
+std::vector<std::string_view> service_type_names()
+{
+    std::vector<std::string_view> names {"DNS"};
+    std::ranges::copy(magic_enum::enum_names<ServiceType>(), std::back_inserter(names));
+    return names;
+}
+
+// What -n accepts. Entries sharing a name are adjacent in services.
+std::vector<std::string_view> service_names()
+{
+    return services
+        | std::views::transform(&Service::name)
+        | std::views::chunk_by(std::ranges::equal_to{})
+        | std::views::transform([](const auto& names) { return names.front(); })
+        | std::ranges::to<std::vector>();
+}
+
 asio::awaitable<std::expected<std::string, std::error_code>>
 query_http_public_ip(fip::context& ctx, Service service)
 {
@@ -134,12 +152,33 @@ int main(int argc, char* argv[]) {
         ("4", "Fetch the public IPv4 address")
         ("6", "Fetch the public IPv6 address")
         ;
+    // Left out of --help; the bash completion reads its lists from here.
+    options.add_options("completion")
+        ("list", "Print the values -s (type) or -n (name) accepts", cxxopts::value<std::string>())
+        ;
 
     try {
         auto result = options.parse(argc, argv);
 
         if (result.count("help")) {
-            std::cout << options.help() << std::endl;
+            std::cout << options.help({""}) << std::endl;
+            return 0;
+        }
+
+        if (result.count("list")) {
+            const auto list = result["list"].as<std::string>();
+            std::vector<std::string_view> values;
+            if (list == "type") {
+                values = service_type_names();
+            } else if (list == "name") {
+                values = service_names();
+            } else {
+                std::cerr << std::format("Unknown list '{}'. Choose from type, name\n", list);
+                return EXIT_FAILURE;
+            }
+            for (const auto value : values) {
+                std::cout << value << "\n";
+            }
             return 0;
         }
 
@@ -152,8 +191,8 @@ int main(int argc, char* argv[]) {
             selectedDNS = std::ranges::equal(service, "DNS"sv, {}, [](unsigned char c) { return std::toupper(c); });
             selectedType = magic_enum::enum_cast<ServiceType>(service, magic_enum::case_insensitive);
             if (!selectedDNS && !selectedType) {
-                std::cerr << std::format("Unknown service type '{}'. Choose from DNS, ", service);
-                std::ranges::for_each(magic_enum::enum_names<ServiceType>()
+                std::cerr << std::format("Unknown service type '{}'. Choose from ", service);
+                std::ranges::for_each(service_type_names()
                                       | std::views::join_with(", "sv),
                                       [](const auto &sv) {
                                           std::cerr << sv;
@@ -169,10 +208,7 @@ int main(int argc, char* argv[]) {
             selectedName = result["name"].as<std::string>();
             if (!std::ranges::contains(services, *selectedName, &Service::name)) {
                 std::cerr << std::format("Unknown service '{}'. Choose from ", *selectedName);
-                std::ranges::for_each(services
-                                      | std::views::transform(&Service::name)
-                                      | std::views::chunk_by(std::ranges::equal_to{})
-                                      | std::views::transform([](const auto& names) { return names.front(); })
+                std::ranges::for_each(service_names()
                                       | std::views::join_with(", "sv),
                                       [](const auto &c) {
                                           std::cerr << c;

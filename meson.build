@@ -22,3 +22,11 @@ deps = [cxxopts_dep, sdjournal_dep, boost_dep, openssl_dep, blobify_dep, pcg_dep
 
 subdir('src')
 subdir('tests')
+
+bash_completion_dep = dependency('bash-completion', required: false)
+if bash_completion_dep.found()
+  bash_completion_dir = bash_completion_dep.get_variable(pkgconfig: 'completionsdir')
+else
+  bash_completion_dir = get_option('datadir') / 'bash-completion' / 'completions'
+endif
+install_data('completions/fetchip.bash', install_dir: bash_completion_dir, rename: 'fetchip')
