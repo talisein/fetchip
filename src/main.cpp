@@ -20,6 +20,7 @@
 #include "dns_resolver.hpp"
 #include "fetch_error.hpp"
 #include "http_client.hpp"
+#include "name_resolver.hpp"
 
 using namespace std::literals;
 enum class ServiceType {
@@ -139,6 +140,15 @@ query_public_ip(fip::context &ctx, Service service)
         ctx.log.debug("Unknown service type {}", magic_enum::enum_integer(service.type));
         co_return std::unexpected(make_error_code(FetchError::UnknownServiceType));
     }
+}
+
+// Every host name is looked up through systemd-resolved, so no query can succeed without it.
+boost::system::error_code connect_resolved(asio::io_context& io)
+{
+    asio::local::stream_protocol::socket socket {io};
+    boost::system::error_code ec;
+    socket.connect(asio::local::stream_protocol::endpoint {fip::resolved_address}, ec);
+    return ec;
 }
 
 int main(int argc, char* argv[]) {
@@ -262,6 +272,11 @@ int main(int argc, char* argv[]) {
             ctx.log.set_verbose(true);
         }
 
+        if (const auto ec = connect_resolved(ctx.io_context); ec != boost::system::error_code {}) {
+            std::cerr << std::format("systemd-resolved is required to use this program: cannot connect to {} ({})\n", fip::resolved_address, ec.message());
+            return EXIT_FAILURE;
+        }
+
         // One service cannot reach consensus, so its answer stands on its own.
         // A name can have several entries (say, DNS_A and DNS_AAAA); try each
         // in turn and print the first answer.
@@ -278,7 +293,7 @@ int main(int argc, char* argv[]) {
                                    // Canonical text, as the consensus path prints.
                                    boost::system::error_code ec;
                                    auto address = asio::ip::make_address(*result, ec);
-                                   if (ec) {
+                                   if (ec != boost::system::error_code {}) {
                                        ctx.log.error("{} did not answer with an address: {}", service.address, *result);
                                        continue;
                                    }

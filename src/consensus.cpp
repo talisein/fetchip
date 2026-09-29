@@ -8,7 +8,7 @@ bool IPConsensus::record(std::string_view text)
 {
     boost::system::error_code ec;
     auto address = asio::ip::make_address(text, ec);
-    if (ec) {
+    if (ec != boost::system::error_code {}) {
         return false;
     }
     // Canonical text, so different spellings of one IPv6 address agree.

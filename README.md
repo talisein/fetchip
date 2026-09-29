@@ -63,7 +63,7 @@ Debug messages go to the journal only in a debug build (`meson setup --buildtype
 
 ## Building
 
-fetchip needs a C++26 compiler, Meson, libsystemd, Boost 1.86 or later and OpenSSL 3. The other dependencies are fetched as Meson wraps.
+fetchip needs a C++26 compiler, Meson, libsystemd (257 or later), Boost 1.86 or later and OpenSSL 3. The other dependencies are fetched as Meson wraps.
 
 ```sh
 meson setup build

@@ -42,9 +42,9 @@ bool query_answers_family(DNSQueryType query, fip::AddressFamily family)
 namespace {
     constexpr asio::ip::port_type dns_port = 53;
 
-    fip::AddressFamily family_of(const asio::ip::udp::endpoint& ep)
+    fip::AddressFamily family_of(const asio::ip::address& address)
     {
-        return ep.address().is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4;
+        return address.is_v6() ? fip::AddressFamily::V6 : fip::AddressFamily::V4;
     }
 }
 
@@ -64,12 +64,12 @@ DNSResolver::create_socket_and_connect(const asio::ip::udp::endpoint& ep)
     // outright, and that must fail this one query, not throw.
     udp::socket s(ctx.io_context);
     s.open(ep.address().is_v4() ? udp::v4() : udp::v6(), ec);
-    if (ec) {
+    if (ec != boost::system::error_code {}) {
         ctx.log.debug("udp socket open failure: {}", ec.message());
         return std::unexpected(ec);
     }
     s.connect(ep, ec);
-    if (ec) {
+    if (ec != boost::system::error_code {}) {
         ctx.log.debug("udp connection failure: {}", ec.message());
         return std::unexpected(ec);
     }
@@ -95,7 +95,7 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
     asio::const_buffer b{buf.data(), static_cast<size_t>(ss.tellp())};
     auto [ec, bytes_sent] = co_await sock.async_send(b, asio::as_tuple(asio::use_awaitable));
 
-    if (ec) {
+    if (ec != boost::system::error_code {}) {
         ctx.log.debug("Failed to send DNS query: {}", ec.message());
         co_return std::unexpected(ec);
     }
@@ -132,14 +132,14 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage&
         auto [ec, bytes_received] = co_await sock.async_receive(asio::buffer(buf),
             asio::cancel_after(remaining, asio::as_tuple(asio::use_awaitable)));
 
-        if (ec || 0 == bytes_received) {
+        if (ec != boost::system::error_code {} || 0 == bytes_received) {
             std::error_code failure = ec;
             // operation_aborted is the timeout only if the caller did not cancel the query.
             const auto cancelled = (co_await asio::this_coro::cancellation_state).cancelled();
             if (ec == asio::error::operation_aborted && cancelled == asio::cancellation_type::none) {
                 ctx.log.debug("No response from {} within {}", sock.remote_endpoint(ec).address().to_string(), fip::dns_resolution_timeout);
                 failure = std::make_error_code(std::errc::timed_out);
-            } else if (ec) {
+            } else if (ec != boost::system::error_code {}) {
                 ctx.log.debug("Failed to receive UDP response: {}. Got {} bytes.", ec.message(), bytes_received);
             } else {
                 ctx.log.debug("Got an empty UDP response");
@@ -158,7 +158,7 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage&
 
     boost::system::error_code close_ec;
     sock.close(close_ec);
-    if (close_ec) {
+    if (close_ec != boost::system::error_code {}) {
         ctx.log.warning("Failed to close UDP socket: {}. Ignoring...", close_ec.message());
     }
 
@@ -273,14 +273,14 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
     std::error_code last_error {};
 
     for (const auto& address : *resolver_addrs) {
-        const asio::ip::udp::endpoint resolver_addr {address, dns_port};
-        const auto transport = family_of(resolver_addr);
+        const auto transport = family_of(address);
         if (!query_answers_family(query, transport)) {
             last_error = make_error_code(DNSError::DNSResolverWrongFamily);
-            ctx.log.debug("Skipping {}: {} cannot answer over {}", resolver_addr.address().to_string(), magic_enum::enum_name(query), magic_enum::enum_name(transport));
+            ctx.log.debug("Skipping {}: {} cannot answer over {}", address.to_string(), magic_enum::enum_name(query), magic_enum::enum_name(transport));
             continue;
         }
 
+        const asio::ip::udp::endpoint resolver_addr {address, dns_port};
         auto sock = create_socket_and_connect(resolver_addr);
         if (!sock) {
             last_error = sock.error();

@@ -1,5 +1,4 @@
 #include <chrono>
-#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -22,6 +21,7 @@ struct outcome {
 struct lookup_options {
     std::optional<std::string> reply;
     fip::AddressFamily family = fip::AddressFamily::Any;
+    fip::address_families (*configured_families)() = [] { return fip::address_families {.v4 = true, .v6 = true}; };
     std::chrono::steady_clock::duration timeout = 1s;
     std::optional<std::chrono::steady_clock::duration> cancel_after;
     bool serve = true;
@@ -32,10 +32,11 @@ std::string describe(const outcome& o)
     return o.result ? std::format("{} addresses", o.result->size()) : o.result.error().message();
 }
 
-std::filesystem::path socket_path()
+// An abstract socket name, which sd-varlink spells with a leading '@' and asio with a leading NUL.
+std::string socket_name()
 {
     static int counter = 0;
-    return std::filesystem::temp_directory_path() / std::format("fetchip-test-{}-{}.sock", ::getpid(), counter++);
+    return std::format("fetchip-test-{}-{}", ::getpid(), counter++);
 }
 
 asio::awaitable<void> fake_resolved(local::acceptor& acceptor, std::optional<std::string> reply, std::string& request)
@@ -43,7 +44,7 @@ asio::awaitable<void> fake_resolved(local::acceptor& acceptor, std::optional<std
     auto socket = co_await acceptor.async_accept(asio::use_awaitable);
     acceptor.close();
     auto [ec, n] = co_await asio::async_read_until(socket, asio::dynamic_buffer(request), '\0', asio::as_tuple(asio::use_awaitable));
-    if (ec) {
+    if (ec != boost::system::error_code {}) {
         co_return;
     }
     if (reply) {
@@ -60,13 +61,13 @@ outcome lookup(const lookup_options& options)
 {
     fip::context ctx {39, true};
     ctx.requested_family = options.family;
-    const auto path = socket_path().string();
-    std::filesystem::remove(path);
+    const auto name = socket_name();
+    const auto address = '@' + name;
 
     std::optional<local::acceptor> acceptor;
     std::string request;
     if (options.serve) {
-        acceptor.emplace(ctx.io_context, local::endpoint(path));
+        acceptor.emplace(ctx.io_context, local::endpoint('\0' + name));
         asio::co_spawn(ctx.io_context, fake_resolved(*acceptor, options.reply, request), asio::detached);
     }
 
@@ -79,7 +80,7 @@ outcome lookup(const lookup_options& options)
     }
 
     const auto start = std::chrono::steady_clock::now();
-    asio::co_spawn(ctx.io_context, resolve_host(ctx, "example.com", options.timeout, path),
+    asio::co_spawn(ctx.io_context, resolve_host(ctx, "example.com", options.timeout, address, options.configured_families),
                    asio::bind_cancellation_slot(cancel.slot(),
                    [&](std::exception_ptr e, std::expected<std::vector<asio::ip::address>, std::error_code> r) {
                        cancel_timer.cancel();
@@ -95,7 +96,6 @@ outcome lookup(const lookup_options& options)
                    }));
     ctx.io_context.run();
     const auto elapsed = std::chrono::steady_clock::now() - start;
-    std::filesystem::remove(path);
     return {result.value(), request, elapsed};
 }
 
@@ -106,18 +106,59 @@ int main() {
         auto o = lookup({.reply = R"({"parameters":{"addresses":[{"ifindex":1,"family":2,"address":[192,0,2,1]},{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}],"name":"example.com","flags":0}})"});
         expect(fatal(o.result.has_value())) << describe(o);
         expect(o.result->size() == 2u);
-        expect(o.result->at(0) == asio::ip::make_address("192.0.2.1"));
-        expect(o.result->at(1) == asio::ip::make_address("2001:db8::1"));
+        expect(o.result->at(0) == asio::ip::make_address("2001:db8::1"));
+        expect(o.result->at(1) == asio::ip::make_address("192.0.2.1"));
         expect(o.request.contains(R"("method":"io.systemd.Resolve.ResolveHostname")")) << o.request;
         expect(o.request.contains(R"("name":"example.com")")) << o.request;
         expect(!o.request.contains("family")) << o.request;
     };
 
+    "IPv6 addresses come first, each family in resolved's order"_test = [] {
+        auto o = lookup({.reply = R"({"parameters":{"addresses":[{"family":2,"address":[192,0,2,1]},{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]},{"family":2,"address":[198,51,100,7]},{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,2]}]}})"});
+        expect(fatal(o.result.has_value())) << describe(o);
+        expect(fatal(o.result->size() == 4u));
+        expect(o.result->at(0) == asio::ip::make_address("2001:db8::1"));
+        expect(o.result->at(1) == asio::ip::make_address("2001:db8::2"));
+        expect(o.result->at(2) == asio::ip::make_address("192.0.2.1"));
+        expect(o.result->at(3) == asio::ip::make_address("198.51.100.7"));
+    };
+
     "requested family is passed on"_test = [] {
-        auto v4 = lookup({.reply = R"({"parameters":{"addresses":[{"family":2,"address":[192,0,2,1]}]}})", .family = fip::AddressFamily::V4});
+        const auto v6_only = [] { return fip::address_families {.v4 = false, .v6 = true}; };
+        auto v4 = lookup({.reply = R"({"parameters":{"addresses":[{"family":2,"address":[192,0,2,1]}]}})", .family = fip::AddressFamily::V4, .configured_families = v6_only});
         expect(v4.request.contains(R"("family":2)")) << v4.request;
-        auto v6 = lookup({.reply = R"({"parameters":{"addresses":[{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}]}})", .family = fip::AddressFamily::V6});
+        const auto v4_only = [] { return fip::address_families {.v4 = true, .v6 = false}; };
+        auto v6 = lookup({.reply = R"({"parameters":{"addresses":[{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}]}})", .family = fip::AddressFamily::V6, .configured_families = v4_only});
         expect(v6.request.contains(R"("family":10)")) << v6.request;
+    };
+
+    "without a requested family, only configured families are asked for"_test = [] {
+        auto v4 = lookup({.reply = R"({"parameters":{"addresses":[{"family":2,"address":[192,0,2,1]}]}})",
+                          .configured_families = [] { return fip::address_families {.v4 = true, .v6 = false}; }});
+        expect(v4.request.contains(R"("family":2)")) << v4.request;
+        auto v6 = lookup({.reply = R"({"parameters":{"addresses":[{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}]}})",
+                          .configured_families = [] { return fip::address_families {.v4 = false, .v6 = true}; }});
+        expect(v6.request.contains(R"("family":10)")) << v6.request;
+        auto neither = lookup({.reply = R"({"parameters":{"addresses":[{"family":2,"address":[192,0,2,1]}]}})",
+                               .configured_families = [] { return fip::address_families {}; }});
+        expect(!neither.request.contains("family")) << neither.request;
+        expect(neither.result.has_value()) << describe(neither);
+    };
+
+    "link-local IPv6 addresses carry their interface"_test = [] {
+        auto o = lookup({.reply = R"({"parameters":{"addresses":[{"ifindex":3,"family":10,"address":[254,128,0,0,0,0,0,0,0,0,0,0,0,0,0,1]},{"ifindex":3,"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}]}})"});
+        expect(fatal(o.result.has_value())) << describe(o);
+        expect(fatal(o.result->size() == 2u));
+        expect(o.result->at(0) == asio::ip::make_address("fe80::1%3")) << o.result->at(0).to_string();
+        expect(o.result->at(0).to_v6().scope_id() == 3u);
+        expect(o.result->at(1).to_v6().scope_id() == 0u);
+    };
+
+    "link-local IPv6 addresses without a usable interface are skipped"_test = [] {
+        auto o = lookup({.reply = R"({"parameters":{"addresses":[{"family":10,"address":[254,128,0,0,0,0,0,0,0,0,0,0,0,0,0,2]},{"ifindex":-1,"family":10,"address":[254,128,0,0,0,0,0,0,0,0,0,0,0,0,0,3]},{"ifindex":4294967296,"family":10,"address":[254,128,0,0,0,0,0,0,0,0,0,0,0,0,0,4]},{"ifindex":3,"family":10,"address":[254,128,0,0,0,0,0,0,0,0,0,0,0,0,0,5]}]}})"});
+        expect(fatal(o.result.has_value())) << describe(o);
+        expect(fatal(o.result->size() == 1u));
+        expect(o.result->at(0) == asio::ip::make_address("fe80::5%3")) << o.result->at(0).to_string();
     };
 
     "error replies fail the lookup"_test = [] {

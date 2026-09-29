@@ -28,7 +28,7 @@ namespace {
         req.set(http::field::user_agent, fip::user_agent);
 
         auto [write_ec, bytes_written] = co_await http::async_write(stream, req, token);
-        if (write_ec) {
+        if (write_ec != boost::system::error_code {}) {
             ctx.log.debug("Failed to send request to {}: {}", host, write_ec.message());
             co_return std::unexpected(write_ec);
         }
@@ -37,7 +37,7 @@ namespace {
         http::response_parser<http::string_body> parser;
         parser.body_limit(body_limit);
         auto [read_ec, bytes_read] = co_await http::async_read(stream, buf, parser, token);
-        if (read_ec) {
+        if (read_ec != boost::system::error_code {}) {
             ctx.log.debug("Failed to read response from {}: {}", host, read_ec.message());
             co_return std::unexpected(read_ec);
         }
@@ -57,7 +57,7 @@ namespace {
         std::optional<tcp::endpoint> attempted;
         // Called before every attempt with the previous attempt's result; before the first, ec is always success.
         auto connect_condition_log_previous_endpoint_failure = [&](const boost::system::error_code& ec, const tcp::endpoint& next) {
-            if (ec && attempted) {
+            if (ec != boost::system::error_code {} && attempted) {
                 ctx.log.debug("Failed to connect to {} at {}: {}", host, attempted->address().to_string(), ec.message());
             }
             attempted = next;
@@ -67,7 +67,7 @@ namespace {
         // One deadline for the whole exchange: connect, handshake, write and read on this stream.
         stream.expires_after(fip::http_execution_timeout);
         auto [ec, ep] = co_await stream.async_connect(endpoints, connect_condition_log_previous_endpoint_failure, token);
-        if (ec) {
+        if (ec != boost::system::error_code {}) {
             // No condition call follows the last attempt.
             if (attempted) {
                 ctx.log.debug("Failed to connect to {} at {}: {}", host, attempted->address().to_string(), ec.message());
@@ -132,7 +132,7 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
     }
 
     auto [handshake_ec] = co_await stream.async_handshake(asio::ssl::stream_base::client, token);
-    if (handshake_ec) {
+    if (handshake_ec != boost::system::error_code {}) {
         ctx.log.debug("TLS handshake with {} failed: {}", host, handshake_ec.message());
         co_return std::unexpected(handshake_ec);
     }
@@ -142,7 +142,7 @@ http_get(fip::context& ctx, std::string_view url, std::string_view path)
     // The body stands whatever the shutdown does; eof and stream_truncated are a server skipping its close_notify.
     beast::get_lowest_layer(stream).expires_after(fip::connection_shutdown_timeout);
     auto [shutdown_ec] = co_await stream.async_shutdown(token);
-    if (shutdown_ec && shutdown_ec != asio::error::eof && shutdown_ec != asio::ssl::error::stream_truncated) {
+    if (shutdown_ec != boost::system::error_code {} && shutdown_ec != asio::error::eof && shutdown_ec != asio::ssl::error::stream_truncated) {
         ctx.log.debug("TLS shutdown with {} failed: {}", host, shutdown_ec.message());
     }
     co_return body;
