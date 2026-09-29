@@ -12,7 +12,7 @@ struct std::formatter<DNSHeaderFlags> {
     template <typename FormatContext>
     auto format(DNSHeaderFlags p, FormatContext& ctx) const {
         const DNSHeaderFlags masked_flags = static_cast<DNSHeaderFlags>(p & static_cast<DNSHeaderFlags>(~(OpCodeMask | ResponseCodeMask | QueryResponse)));
-        const auto op_code = static_cast<DNSOpCodes>((p & OpCodeMask) >> 11);
+        const auto op_code = static_cast<DNSOpCodes>((p & OpCodeMask) >> opcode_shift);
         const auto response_code = static_cast<DNSResponseCodes>(p & ResponseCodeMask);
         return format_to(ctx.out(), "DNSHeaderFlags {{ QR: {}, Flags: {}, OpCode: {}, ResponseCode: {} }}",
                          (QueryResponse & p) ? "Response"sv : "Query"sv,

@@ -1,4 +1,5 @@
 #pragma once
+#include <bit>
 #include <variant>
 #include <vector>
 #include <expected>
@@ -13,8 +14,6 @@
 #include "context.hpp"
 #include "error_category.hpp"
 #include <blobify/blobify.hpp>
-
-constexpr size_t DNSBufferSize { 1410 };
 
 using jump_table_t = std::map<uint16_t, std::string>;
 
@@ -53,6 +52,7 @@ struct magic_enum::customize::enum_range<DNSHeaderFlags> {
 
 constexpr DNSHeaderFlags OpCodeMask       = (DNSHeaderFlags)(DNSHeaderFlags::OpCodeB0 | DNSHeaderFlags::OpCodeB1 | DNSHeaderFlags::OpCodeB2 | DNSHeaderFlags::OpCodeB3);
 constexpr DNSHeaderFlags ResponseCodeMask = (DNSHeaderFlags)(DNSHeaderFlags::ResponseCodeB0 | DNSHeaderFlags::ResponseCodeB1 | DNSHeaderFlags::ResponseCodeB2 | DNSHeaderFlags::ResponseCodeB3);
+constexpr auto opcode_shift { std::countr_zero(std::to_underlying(OpCodeMask)) };
 
 enum class DNSOpCodes : uint8_t {
     STANDARD_QUERY = 0,
@@ -337,6 +337,20 @@ constexpr size_t max_name_octets { 255 };
 constexpr size_t max_name_text { max_name_octets - 2 };
 // RFC 1035 §3.3: a <character-string> is one length octet followed by that many octets.
 constexpr size_t max_character_string_octets { std::numeric_limits<uint8_t>::max() };
+// RFC 1035 §4.1.1: the header is six 16-bit fields.
+constexpr size_t message_header_octets { 6 * sizeof(uint16_t) };
+// RFC 1035 §4.1.4: a compression pointer is two octets, both high bits set and then a 14-bit offset.
+constexpr uint8_t compression_pointer_flag { 0xC0 };
+constexpr uint8_t compression_offset_high_mask { static_cast<uint8_t>(~compression_pointer_flag) };
+constexpr auto compression_offset_high_shift { std::numeric_limits<uint8_t>::digits };
+// RFC 1035 §4.2.1: a UDP message is at most 512 octets, and a query without an OPT record (RFC 6891) asks for no more.
+constexpr size_t max_udp_message_octets { 512 };
+// RFC 6891 §6.1.2: an option starts with a 16-bit OPTION-CODE and a 16-bit OPTION-LENGTH.
+constexpr size_t option_header_octets { 2 * sizeof(uint16_t) };
+// RFC 6891 §6.1.3: an OPT record's TTL is an 8-bit EXTENDED-RCODE, an 8-bit VERSION and 16 bits of flags, high octet first.
+constexpr auto opt_ttl_version_shift { std::numeric_limits<uint16_t>::digits };
+constexpr auto opt_ttl_extended_rcode_shift { opt_ttl_version_shift + std::numeric_limits<uint8_t>::digits };
+static_assert(opt_ttl_extended_rcode_shift + std::numeric_limits<uint8_t>::digits == std::numeric_limits<decltype(DNSResourceRecordBlob::ttl)>::digits);
 
 [[nodiscard]] constexpr std::expected<void, std::error_code>
 validate_dns_name(std::string_view name) noexcept

@@ -475,6 +475,7 @@ int main() {
                               static_cast<DNSHeaderFlags>(Authoritative
                                                           | Truncated
                                                           | std::to_underlying(DNSResponseCodes::NAME_ERROR)
+                                                          // RFC 1035 §4.1.1 puts OPCODE at bits 11-14; spelled out so the test doesn't trust opcode_shift.
                                                           | (static_cast<uint16_t>(std::to_underlying(DNSOpCodes::SERVER_STATUS_REQUEST)) << 11)))));
         expect(eq("DNSHeaderFlags { QR: Response, Flags: Authoritative, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }"sv,
                   std::format("{}", static_cast<DNSHeaderFlags>(Authoritative | QueryResponse))));
@@ -529,7 +530,7 @@ int main() {
 
         auto message = DNSMessage::deserialize(ctx, in);
         expect(fatal(message.has_value()));
-        std::array<char, DNSBufferSize> buf;
+        std::array<char, max_udp_message_octets> buf;
         std::ospanstream out {buf};
         expect(message->serialize(out).has_value());
         // The capture has no compression pointers, so its OPT record must come back octet for octet.
@@ -613,7 +614,7 @@ int main() {
         fip::context ctx(39, true);
         DNSMessage message {ctx};
         message.add_question(name, DNSQueryType::A);
-        std::array<char, DNSBufferSize> buf;
+        std::array<char, max_udp_message_octets> buf;
         std::spanstream ss(buf);
 
         expect(message.serialize(ss).has_value()) << name;
@@ -629,7 +630,7 @@ int main() {
         fip::context ctx(39, true);
         DNSMessage message {ctx};
         message.add_question(name, DNSQueryType::A);
-        std::array<char, DNSBufferSize> buf;
+        std::array<char, max_udp_message_octets> buf;
         std::ospanstream ss(buf);
 
         const auto serialized = message.serialize(ss);
@@ -673,7 +674,7 @@ int main() {
         const std::string longest(255, 'x');
         DNSMessage message {ctx};
         message.add_answer(DNSResourceRecord { "miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 256 }, RData_TXT { {longest} } });
-        std::array<char, DNSBufferSize> buf;
+        std::array<char, max_udp_message_octets> buf;
         std::spanstream ss(buf);
 
         expect(message.serialize(ss).has_value());
@@ -687,7 +688,7 @@ int main() {
     "serialize txt string past size limit"_test = [] (const auto& strings) {
         fip::context ctx(39, true);
         DNSResourceRecord record { "miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 0 }, RData_TXT { strings } };
-        std::array<char, DNSBufferSize> buf;
+        std::array<char, max_udp_message_octets> buf;
         std::ospanstream ss(buf);
 
         const auto serialized = record.serialize(ctx, ss);

@@ -19,9 +19,9 @@ EDNS_ResourceRecord::EDNS_ResourceRecord(const DNSResourceRecordBlob& rr) :
     type(rr.type),
     payload_size(std::to_underlying(rr.query_class)),
     // rr.ttl is already in host order: EXTENDED-RCODE | VERSION | flags
-    extendedRCode(static_cast<uint8_t>(rr.ttl >> 24)),
-    version(static_cast<uint8_t>(rr.ttl >> 16)),
-    flags(static_cast<DNSOptFlags>(rr.ttl & 0xFFFF)),
+    extendedRCode(static_cast<uint8_t>(rr.ttl >> opt_ttl_extended_rcode_shift)),
+    version(static_cast<uint8_t>(rr.ttl >> opt_ttl_version_shift)),
+    flags(static_cast<DNSOptFlags>(rr.ttl & std::numeric_limits<uint16_t>::max())),
     rdlength(rr.rdlength)
 {
 }
@@ -140,7 +140,7 @@ namespace {
                 return it->second;
             }
 
-            const bool is_compressed = (label_size & 0xC0) == 0xC0;
+            const bool is_compressed = (label_size & compression_pointer_flag) == compression_pointer_flag;
             if (is_compressed) {
                 uint8_t next;
                 if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &next);
@@ -148,7 +148,7 @@ namespace {
                     return std::unexpected(handle_eof(is));
                 }
 
-                auto jump = static_cast<uint16_t>((label_size & 0x3F) << 8) | next;
+                auto jump = static_cast<uint16_t>((label_size & compression_offset_high_mask) << compression_offset_high_shift) | next;
                 if (auto it = jump_table.find(jump); it != jump_table.end()) {
                     // The accumulated prefix ends in '.'; the cached name has none.
                     auto res = hostname.str() + it->second;
@@ -243,7 +243,7 @@ RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexce
         RData_OPT res {};
         auto rdata_left = rdata.size();
         while (rdata_left > 0) {
-            if (rdata_left < sizeof(DNSOptionBlob)) {
+            if (rdata_left < option_header_octets) {
                 ctx.log.debug("Option header overruns the {} bytes of rdata left", rdata_left);
                 return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
             }
@@ -258,7 +258,7 @@ RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexce
                               option.data.size());
                 return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
             }
-            rdata_left -= sizeof(DNSOptionBlob) + option.data.size();
+            rdata_left -= option_header_octets + option.data.size();
             res.options.push_back(std::move(option));
         }
 

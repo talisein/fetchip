@@ -77,7 +77,7 @@ DNSResolver::send_dns_query(asio::ip::udp::socket& sock, std::string_view host, 
     DNSMessage message(ctx);
     message.add_question(host, query_type);
 
-    std::array<char, DNSBufferSize> buf;
+    std::array<char, max_udp_message_octets> buf;
     std::ospanstream ss {buf};
     auto serialized = message.serialize(ss);
     if (!serialized) {
@@ -116,7 +116,7 @@ namespace {
 asio::awaitable<std::expected<std::string, std::error_code>>
 DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport) {
     const auto deadline = std::chrono::steady_clock::now() + fip::dns_resolution_timeout;
-    std::array<char, DNSBufferSize> buf;
+    std::array<char, max_udp_message_octets> buf;
     std::expected<std::string, std::error_code> result;
 
     while (true) {

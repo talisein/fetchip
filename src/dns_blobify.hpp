@@ -7,7 +7,7 @@
 constexpr auto properties(blob::tag<DNSHeader>) {
     blob::properties_t<DNSHeader> props {};
 
-    props.expected_size = 12; // 16 * 6 / 8
+    props.expected_size = message_header_octets;
     std::apply([](auto&... member){((member.endianness = std::endian::big), ...);}, props.members);
 
     return props;
@@ -47,7 +47,7 @@ constexpr auto properties(blob::tag<in_addr>) {
 
 constexpr auto properties(blob::tag<DNSOptionBlob>) {
     blob::properties_t<DNSOptionBlob> props {};
-    props.expected_size = 4;
+    props.expected_size = option_header_octets;
     props.member<&DNSOptionBlob::option_code>().endianness    = std::endian::big;
     props.member<&DNSOptionBlob::option_code>().validate_enum = false;
     props.member<&DNSOptionBlob::data_size>().endianness      = std::endian::big;
