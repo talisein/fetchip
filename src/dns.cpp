@@ -443,6 +443,22 @@ DNSMessage::serialize(std::ostream& os) const noexcept
     return {};
 }
 
+namespace {
+    // Generator for std::ranges::generate_n: deserializes one T or throws.
+    template <typename T>
+    struct throwing_deserializer {
+        fip::context& ctx;
+        std::istream& is;
+        jump_table_t& jump_table;
+
+        T operator()() const {
+            auto res = T::deserialize(ctx, is, jump_table);
+            if (!res) throw std::system_error(res.error(), "try_deserialize");
+            return *res;
+        }
+    };
+}
+
 std::expected<DNSMessage, std::error_code>
 DNSMessage::deserialize(fip::context& ctx, std::istream& is) noexcept
 {
@@ -454,13 +470,8 @@ DNSMessage::deserialize(fip::context& ctx, std::istream& is) noexcept
 
         res.header = blob::load<DNSHeader>(loader, blob::tag<fetchip_construction_policy>());
         ctx.log.debug("Got header {}", res.header);
-        auto g = [&ctx, &is, &jump_table]<typename T> -> T {
-            auto res = T::deserialize(ctx, is, jump_table);
-            if (!res) throw std::system_error(res.error(), "try_deserialize");
-            return *res;
-        };
-        auto g_q  = std::bind(&decltype(g)::operator()<DNSQuestion>, g);
-        auto g_rr = std::bind(&decltype(g)::operator()<DNSResourceRecord>, g);
+        throwing_deserializer<DNSQuestion>       g_q {ctx, is, jump_table};
+        throwing_deserializer<DNSResourceRecord> g_rr{ctx, is, jump_table};
 
         std::ranges::generate_n(std::back_inserter(res.questions),   res.header.qdcount, g_q);
         for (const auto &q : res.questions) {
