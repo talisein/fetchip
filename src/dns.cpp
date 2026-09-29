@@ -17,22 +17,12 @@
 EDNS_ResourceRecord::EDNS_ResourceRecord(const DNSResourceRecordBlob& rr) :
     type(rr.type),
     payload_size(std::to_underlying(rr.query_class)),
+    // rr.ttl is already in host order: EXTENDED-RCODE | VERSION | flags
+    extendedRCode(static_cast<uint8_t>(rr.ttl >> 24)),
+    version(static_cast<uint8_t>(rr.ttl >> 16)),
+    flags(static_cast<DNSOptFlags>(rr.ttl & 0xFFFF)),
     rdlength(rr.rdlength)
 {
-    union {
-        uint32_t ttl;
-        struct {
-            uint8_t rcode;
-            uint8_t version;
-            uint16_t flags;
-        } edns;
-    } u;
-    static_assert(sizeof(u) == sizeof(uint32_t));
-    static_assert(sizeof(u.edns) == sizeof(u.ttl));
-    u.ttl = rr.ttl;
-    extendedRCode = u.edns.rcode;
-    version = u.edns.version;
-    flags = magic_enum::enum_value<DNSOptFlags>(u.edns.flags);
 }
 
 static std::error_code

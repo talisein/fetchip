@@ -132,13 +132,16 @@ struct std::formatter<DNSResourceRecord> {
             }
         } else {
             EDNS_ResourceRecord edns {rr.blob};
+            auto flags = std::string(magic_enum::enum_flags_name(edns.flags));
+            if (flags.empty())
+                flags = std::format("{:#06x}", std::to_underlying(edns.flags));
 
             auto out_iter = format_to(ctx.out(), "EDNS_ResourceRecord {{ Type: {}, UDP_PayloadSize: {}, ExtendedRCode: {}, Version: {}, Flags: {}, RDataLength: {}"sv,
                                       magic_enum::enum_name(edns.type),
                                       edns.payload_size,
                                       edns.extendedRCode,
                                       edns.version,
-                                      magic_enum::enum_flags_name(edns.flags),
+                                      flags,
                                       edns.rdlength);
             return format_to(out_iter, "{} }}", std::get<RData_OPT>(rr.rdata));
         }
