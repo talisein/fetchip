@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <bit>
 #include <spanstream>
 #include <sstream>
@@ -671,6 +672,19 @@ int main() {
         "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\2\0\n\0\10\31\304\336\374/\340u\35"sv,
         // RRSIG claiming 8 rdata bytes with only 3 left in the message.
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\56\0\1\0\0\0\0\0\10abc"sv,
+    };
+
+    "exception log names the catching function"_test = [] {
+        std::ispanstream ss {"\314\347\201"sv};
+        fip::context ctx(39, true);
+        std::vector<std::string> printed;
+        ctx.log.hook_print = [&](const std::string_view& msg) { printed.emplace_back(msg); };
+
+        auto message = DNSMessage::deserialize(ctx, ss);
+        expect(eq(message.has_value(), false));
+        expect(std::ranges::any_of(printed, [](const std::string& line) {
+            return line.contains("system_error exception!") && line.contains("DNSMessage::deserialize");
+        })) << std::format("{}", printed);
     };
 
     "skip unknown record types"_test = [] {

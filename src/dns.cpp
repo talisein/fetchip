@@ -29,7 +29,7 @@ EDNS_ResourceRecord::EDNS_ResourceRecord(const DNSResourceRecordBlob& rr) :
 static std::error_code
 dns_exception_handler(fip::context& ctx,
                       DNSError unexpected,
-                      std::source_location src = std::source_location()) noexcept
+                      std::source_location src = std::source_location::current()) noexcept
 {
     try {
         throw;
