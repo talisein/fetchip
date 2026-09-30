@@ -7,6 +7,12 @@ test('dns', dns_exe)
 consensus_exe = executable('consensus-test', 'consensus.cpp', dependencies: [fetchip_deps, ut_dep])
 test('consensus', consensus_exe)
 
+consensus_run_exe = executable('consensus-run-test', 'consensus_run.cpp', dependencies: [fetchip_deps, ut_dep])
+test('consensus-run', consensus_run_exe)
+
+services_exe = executable('services-test', 'services.cpp', dependencies: [fetchip_deps, ut_dep])
+test('services', services_exe)
+
 name_resolver_exe = executable('name-resolver-test', 'name_resolver.cpp', dependencies: [fetchip_deps, ut_dep])
 test('name-resolver', name_resolver_exe)
 

@@ -4,10 +4,12 @@ fetchip_files = [
 
 lib_srcs = [
   'consensus.cpp',
+  'consensus_run.cpp',
   'dns.cpp',
   'dns_resolver.cpp',
   'http_client.cpp',
   'name_resolver.cpp',
+  'services.cpp',
 ]
 
 version_hpp = configure_file(input: 'version.hpp.in',

@@ -6,6 +6,8 @@ enum class FetchError
 {
     UnknownServiceType,
     NameResolutionFailed,
+    NoAnswer,
+    NoConsensus,
 };
 
 namespace std
