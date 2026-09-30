@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "address_family.hpp"
+#include "consensus.hpp"
 #include "dns.hpp"
 
 enum class ServiceType {
@@ -88,6 +89,9 @@ static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns
 
 // DNS_A and DNS_AAAA services answer in their query's family; the others answer in whichever family connected.
 bool serves_family(const Service& service, fip::AddressFamily family);
+
+// HTTPS proves who answered, and an authoritative nameserver's AA flag rules out a resolver answering for it; anything else could have come from the path.
+Trust trust_of(const Service& service);
 
 // What -s accepts: DNS for every DNS_* type, then each type by name.
 std::vector<std::string_view> service_type_names();

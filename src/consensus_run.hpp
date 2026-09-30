@@ -34,15 +34,18 @@ private:
     };
 
     void top_up();
+    bool draw(fip::AddressFamily family, Trust at_least);
     void launch(const Service& service);
     void on_done(Query& query, std::exception_ptr e, std::expected<std::string, std::error_code> result);
     void settle();
-    std::size_t in_flight(fip::AddressFamily family) const;
-    std::size_t left(fip::AddressFamily family) const;
+    std::size_t in_flight(fip::AddressFamily family, Trust at_least) const;
+    std::size_t left(fip::AddressFamily family, Trust at_least) const;
 
     fip::context& ctx;
     std::vector<Service> candidates;
     PublicIpQuery query;
+    // Computed from candidates, so both must stay declared after it.
+    Trust winner_needs;
     IPConsensus consensus;
     std::list<Query> queries;
     bool settled = false;

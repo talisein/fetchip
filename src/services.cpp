@@ -12,6 +12,17 @@ bool serves_family(const Service& service, fip::AddressFamily family)
     return !dns_query || query_answers_family(*dns_query, family);
 }
 
+Trust trust_of(const Service& service)
+{
+    if (service.type == ServiceType::HTTPS) {
+        return Trust::Authenticated;
+    }
+    if (service.resolver && service.resolver->role == NameserverRole::Authoritative) {
+        return Trust::Authoritative;
+    }
+    return Trust::Unverified;
+}
+
 std::vector<std::string_view> service_type_names()
 {
     std::vector<std::string_view> names {"DNS"};

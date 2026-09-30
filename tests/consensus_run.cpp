@@ -53,9 +53,9 @@ constexpr Service https(std::string_view address)
     return {address, address, "/", std::nullopt, ServiceType::HTTPS};
 }
 
-constexpr Service dns(std::string_view address, ServiceType type)
+constexpr Service dns(std::string_view address, ServiceType type, NameserverRole role)
 {
-    return {address, address, std::nullopt, Nameserver {"resolver.example", NameserverRole::Authoritative}, type};
+    return {address, address, std::nullopt, Nameserver {"resolver.example", role}, type};
 }
 
 struct outcome {
@@ -152,24 +152,66 @@ int main() {
         expect(o.launched == std::vector {"b"sv, "a"sv});
     };
 
+    // h is drawn first in these two: the winner needs its HTTPS vote.
     "the first family to agree wins and cancels the rest"_test = [] {
-        auto o = run({https("h"), dns("v6", ServiceType::DNS_AAAA), dns("v4", ServiceType::DNS_A)}, {
+        auto o = run({https("h"), dns("v6", ServiceType::DNS_AAAA, NameserverRole::Recursive), dns("v4", ServiceType::DNS_A, NameserverRole::Recursive)}, {
             {"h", {20ms, "192.0.2.1"s}},
             {"v6", {10s, "2001:db8::1"s}},
             {"v4", {10ms, "192.0.2.1"s}},
         });
         expect(o.result == "192.0.2.1"s) << describe(o);
-        expect(o.launched == std::vector {"v4"sv, "h"sv, "v6"sv});
+        expect(o.launched == std::vector {"h"sv, "v4"sv, "v6"sv});
         expect(o.completed == std::vector {"v4"sv, "h"sv});
     };
 
     "a requested family only asks services that answer in it"_test = [] {
-        auto o = run({https("h"), dns("v6", ServiceType::DNS_AAAA), dns("v4", ServiceType::DNS_A)}, {
+        auto o = run({https("h"), dns("v6", ServiceType::DNS_AAAA, NameserverRole::Recursive), dns("v4", ServiceType::DNS_A, NameserverRole::Recursive)}, {
             {"h", {10ms, "192.0.2.1"s}},
             {"v6", {10ms, "2001:db8::1"s}},
             {"v4", {10ms, "192.0.2.1"s}},
         }, AddressFamily::V4);
         expect(o.result == "192.0.2.1"s) << describe(o);
-        expect(o.launched == std::vector {"v4"sv, "h"sv});
+        expect(o.launched == std::vector {"h"sv, "v4"sv});
+    };
+
+    "an HTTPS service is drawn first and its vote settles the run"_test = [] {
+        auto o = run({https("h"), dns("a", ServiceType::DNS_A, NameserverRole::Authoritative), dns("b", ServiceType::DNS_A, NameserverRole::Authoritative)}, {
+            {"h", {30ms, "192.0.2.1"s}},
+            {"a", {10ms, "192.0.2.1"s}},
+            {"b", {10ms, "192.0.2.1"s}},
+        }, AddressFamily::V4);
+        expect(o.result == "192.0.2.1"s) << describe(o);
+        expect(o.launched == std::vector {"h"sv, "b"sv});
+        expect(o.completed == std::vector {"b"sv, "h"sv});
+    };
+
+    "with no HTTPS service left DNS cannot win"_test = [] {
+        auto o = run({https("h"), dns("a", ServiceType::DNS_A, NameserverRole::Authoritative), dns("b", ServiceType::DNS_A, NameserverRole::Authoritative)}, {
+            {"h", {5ms, std::make_error_code(std::errc::connection_refused)}},
+            {"a", {10ms, "192.0.2.1"s}},
+            {"b", {10ms, "192.0.2.1"s}},
+        }, AddressFamily::V4);
+        expect(o.result == std::unexpected(make_error_code(FetchError::NoConsensus))) << describe(o);
+        expect(o.launched == std::vector {"h"sv, "b"sv});
+    };
+
+    "a DNS-only run waits for an authoritative vote"_test = [] {
+        auto o = run({dns("x", ServiceType::DNS_A, NameserverRole::Authoritative), dns("r1", ServiceType::DNS_A, NameserverRole::Recursive), dns("r2", ServiceType::DNS_A, NameserverRole::Recursive)}, {
+            {"x", {30ms, "192.0.2.1"s}},
+            {"r1", {10ms, "192.0.2.1"s}},
+            {"r2", {10ms, "192.0.2.1"s}},
+        }, AddressFamily::V4);
+        expect(o.result == "192.0.2.1"s) << describe(o);
+        expect(o.launched == std::vector {"x"sv, "r2"sv});
+        expect(o.completed == std::vector {"r2"sv, "x"sv});
+    };
+
+    "a run with nothing trusted to offer needs nothing trusted"_test = [] {
+        auto o = run({dns("r1", ServiceType::DNS_AAAA, NameserverRole::Recursive), dns("r2", ServiceType::DNS_AAAA, NameserverRole::Recursive)}, {
+            {"r1", {10ms, "2001:db8::1"s}},
+            {"r2", {10ms, "2001:db8::1"s}},
+        }, AddressFamily::V6);
+        expect(o.result == "2001:db8::1"s) << describe(o);
+        expect(o.launched == std::vector {"r2"sv, "r1"sv});
     };
 }

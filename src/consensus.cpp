@@ -22,7 +22,7 @@ namespace {
     }
 }
 
-bool IPConsensus::record(std::string_view text)
+bool IPConsensus::record(std::string_view text, Trust trust)
 {
     boost::system::error_code ec;
     auto address = asio::ip::make_address(text, ec);
@@ -34,7 +34,10 @@ bool IPConsensus::record(std::string_view text)
         return false;
     }
     // Canonical text, so different spellings of one IPv6 address agree.
-    ++tally->get().votes[address.to_string()];
+    const auto canonical = address.to_string();
+    ++tally->get().votes[canonical];
+    auto strongest = tally->get().strongest.try_emplace(canonical, trust).first;
+    strongest->second = std::max(strongest->second, trust);
     ++tally->get().total;
     return true;
 }
@@ -50,7 +53,16 @@ std::size_t IPConsensus::Tally::leader_votes() const
     return it == votes.end() ? 0 : it->second;
 }
 
-std::optional<IPConsensus::Winner> IPConsensus::Tally::winner() const
+bool IPConsensus::Tally::leader_trusted(Trust needs) const
+{
+    if (needs == Trust::Unverified) {
+        return true;
+    }
+    auto it = leader();
+    return it != votes.end() && strongest.at(it->first) >= needs;
+}
+
+std::optional<IPConsensus::Winner> IPConsensus::Tally::winner(Trust needs) const
 {
     auto it = leader();
     if (it == votes.end()) {
@@ -58,20 +70,22 @@ std::optional<IPConsensus::Winner> IPConsensus::Tally::winner() const
     }
     const bool quorum = it->second >= min_agreeing_answers;
     const bool strict_majority = 2 * it->second > total;
-    if (!quorum || !strict_majority) {
+    if (!quorum || !strict_majority || !leader_trusted(needs)) {
         return std::nullopt;
     }
     return Winner {it->first, it->second, total};
 }
 
-std::size_t IPConsensus::Tally::needed() const
+std::size_t IPConsensus::Tally::needed(Trust needs) const
 {
     // k agreeing answers win when leader + k >= min_agreeing_answers (the quorum)
-    // and 2 * (leader + k) > total + k (a strict majority).
+    // and 2 * (leader + k) > total + k (a strict majority), and one of them must be
+    // trusted if no vote for the leader is yet.
     const auto leader = leader_votes();
     const std::size_t for_majority = total + 1 > 2 * leader ? total + 1 - 2 * leader : 0;
     const std::size_t for_quorum = leader < min_agreeing_answers ? min_agreeing_answers - leader : 0;
-    return std::max(for_majority, for_quorum);
+    const std::size_t for_trust = leader_trusted(needs) ? 0 : 1;
+    return std::max({for_majority, for_quorum, for_trust});
 }
 
 std::optional<std::reference_wrapper<IPConsensus::Tally>> IPConsensus::tally_for(fip::AddressFamily family)
@@ -101,7 +115,7 @@ std::size_t IPConsensus::answers() const
 std::optional<IPConsensus::Winner> IPConsensus::winner() const
 {
     for (const auto family : {fip::AddressFamily::V4, fip::AddressFamily::V6}) {
-        if (auto winner = contender(family).and_then(&Tally::winner)) {
+        if (auto winner = contender(family).and_then([this](const Tally& t) { return t.winner(winner_needs); })) {
             return winner;
         }
     }
@@ -110,5 +124,10 @@ std::optional<IPConsensus::Winner> IPConsensus::winner() const
 
 std::optional<std::size_t> IPConsensus::needed(fip::AddressFamily family) const
 {
-    return contender(family).transform(&Tally::needed);
+    return contender(family).transform([this](const Tally& t) { return t.needed(winner_needs); });
+}
+
+bool IPConsensus::needs_trusted(fip::AddressFamily family) const
+{
+    return contender(family).transform([this](const Tally& t) { return !t.leader_trusted(winner_needs); }).value_or(false);
 }

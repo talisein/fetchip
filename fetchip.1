@@ -26,6 +26,15 @@ nothing else is ever written to standard output.
 .PP
 It asks several public "what is my IP" services, drawn in random order a few at a time, and prints an address only when they agree.
 An address wins once at least two services report it and it holds a strict majority of the answers so far in its family.
+It also needs a vote from the most trustworthy kind of service in the run:
+an HTTPS service if there is one,
+otherwise a DNS service that asks the provider's authoritative server.
+DNS and plain HTTP can be answered by anything on the path,
+so their votes count towards the majority but cannot win on their own.
+.B "\-s HTTP"
+and
+.B "\-s DNS_AAAA"
+have neither kind, and skip this check.
 IPv4 and IPv6 answers are tallied separately, so without
 .B \-4
 or
