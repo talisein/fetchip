@@ -40,6 +40,9 @@ bool query_answers_family(DNSQueryType query, fip::AddressFamily family)
 
 namespace {
     constexpr asio::ip::port_type dns_port = 53;
+    // One octet past RFC 1035 §4.2.1's limit, so the kernel cannot cut an oversize datagram
+    // to a legal size and hide that it was ever longer.
+    constexpr size_t receive_buffer_octets { max_udp_message_octets + 1 };
 }
 
 std::expected<asio::ip::udp::socket, std::error_code>
@@ -116,7 +119,7 @@ namespace {
 asio::awaitable<std::expected<std::string, std::error_code>>
 DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport) {
     const auto deadline = std::chrono::steady_clock::now() + fip::dns_resolution_timeout;
-    std::array<char, max_udp_message_octets> buf;
+    std::array<char, receive_buffer_octets> buf;
     std::expected<std::string, std::error_code> result;
 
     while (true) {
@@ -138,6 +141,18 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage&
                 failure = make_error_code(DNSError::DNSResolverEmptyResponse);
             }
             result = std::unexpected(failure);
+            break;
+        }
+
+        if (max_udp_message_octets < bytes_received) {
+            boost::system::error_code peer_ec;
+            const auto peer = sock.remote_endpoint(peer_ec);
+            if (peer_ec != boost::system::error_code {}) {
+                ctx.log.debug("Got a UDP response longer than {} octets from an unknown peer: {}", max_udp_message_octets, peer_ec.message());
+            } else {
+                ctx.log.debug("Got a UDP response longer than {} octets from {}", max_udp_message_octets, peer.address().to_string());
+            }
+            result = std::unexpected(make_error_code(DNSError::DNSResolverOversizedResponse));
             break;
         }
 
@@ -184,6 +199,11 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
     if (message->get_header().get_response_code() != DNSResponseCodes::NO_ERROR) {
         ctx.log.debug("Bailing due to error response code");
         return std::unexpected(make_error_code(DNSError::DNSResolverErrorResponse));
+    }
+    // RFC 1035 §4.1.1, RFC 2181 §9: TC marks the reply incomplete, and there is no TCP retry.
+    if (message->get_header().flags & Truncated) {
+        ctx.log.debug("Bailing due to a truncated response");
+        return std::unexpected(make_error_code(DNSError::DNSResolverTruncatedResponse));
     }
 
     auto answers = message->get_answers();

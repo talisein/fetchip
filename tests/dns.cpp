@@ -1131,6 +1131,23 @@ int main() {
         }
     };
 
+    "reject truncated response"_test = [] {
+        // The "reject mismatched response" capture with TC set: flags octet \204 becomes \206.
+        constexpr auto truncated = "\314\347\206\0\0\1\0\1\0\0\0\0\6whoami\2ds\7akahelp\3net\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\21\2ns\015198.51.100.39"sv;
+        fip::context ctx(39, true);
+        DNSResolver resolver {ctx};
+        DNSMessage query {ctx};
+        query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
+
+        const auto ours = resolver.parse_dns_response(with_id(truncated, query), query, fip::AddressFamily::V4);
+        expect(ours == std::unexpected(make_error_code(DNSError::DNSResolverTruncatedResponse)));
+
+        // A wrong ID is reported before TC, so the receive loop still skips spoofed replies.
+        const auto other_id = static_cast<uint16_t>(~query.get_header().id);
+        const auto not_ours = resolver.parse_dns_response(with_id(truncated, other_id), query, fip::AddressFamily::V4);
+        expect(not_ours == std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse)));
+    };
+
     "query answers family"_test = [] {
         using enum DNSQueryType;
         using fip::AddressFamily;
