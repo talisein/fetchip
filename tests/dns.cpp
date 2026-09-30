@@ -73,6 +73,17 @@ std::string with_id(std::string_view response, const DNSMessage& query)
     return with_id(response, query.get_header().id);
 }
 
+// A system_error is a runtime_error too, so the message tells the streambuf's own exception apart.
+std::string outcome_of(const auto& call)
+{
+    try {
+        const auto result = call();
+        return result.has_value() ? "no error" : result.error().message();
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+}
+
 int main() {
     using namespace boost::ut;
     using namespace std::string_literals;
@@ -204,8 +215,10 @@ int main() {
         {"www.example.com"sv, DNSError::SerializeStreamFailure},
     };
 
-    "query serialize exception"_test = [] (const auto &in) {
-        const auto &[host, error] = in;
+    // The streambuf throws writing the header's third octet, inside blobify's store; with badbit in
+    // the mask ostream::write rethrows it, and the adapter converts only system_error, so it reaches
+    // the caller.
+    "query serialize exception"_test = [] (const auto &host) {
         fip::context ctx{39, true};
         DNSMessage message {ctx};
         message.add_question(host, DNSQueryType::A);
@@ -213,11 +226,10 @@ int main() {
         std::ostream ss(&buf);
         ss.exceptions(std::ios_base::badbit | std::ios_base::failbit);
 
-        auto result = message.serialize(ss);
-        expect(!result.has_value());
-        expect(eq(result.error(), error));
-    } | std::vector<std::pair<std::string_view, DNSError>> {
-        {"www.example.com"sv, DNSError::SerializeUnexpectedException},
+        const auto serialize = [&] { return message.serialize(ss); };
+        expect(eq(outcome_of(serialize), "overflow"sv)) << host;
+    } | std::vector {
+        "www.example.com"sv,
     };
 
 
@@ -345,7 +357,7 @@ int main() {
             expect(eq(result.error(), err)) << '"' << fuzz << '"';
         }
     } | std::vector<std::pair<std::string_view, DNSError>> {
-        {"\x01\0\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
+        {"\x01\0\x00\x01\x00\x01"sv, DNSError::DeserializeInvalidValue},
         {"\xC0\x00\x00\x01\x00\x01"sv, DNSError::DNSHostToHostBadCompressionPointer},
         {"\xC0\x10\x00\x01\x00\x01"sv, DNSError::DNSHostToHostBadCompressionPointer},
         // Backward pointer into the middle of a label: byte 'a' reads as size 97.
@@ -355,7 +367,13 @@ int main() {
         {"\xC0"sv, DNSError::DNSHostToHostPrematureEOF},
         {"\x6Fx2345678901\003com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {""sv, DNSError::DNSHostToHostPrematureEOF},
-        {"\x01x\x00\x01\x00\x01"sv, DNSError::BlobifyStore},
+        {"\x01x\x00\x01\x00\x01"sv, DNSError::DeserializeInvalidValue},
+        // blobify validates both enums of the question; a value outside either is an invalid value,
+        // not an unexpected exception.
+        // QTYPE 65 (HTTPS, RFC 9460), which DNSQueryType does not list.
+        {"\4miku\4cute\0\0\101\0\1"sv, DNSError::DeserializeInvalidValue},
+        // QCLASS 254 (NONE, RFC 2136), which DNSQueryClass does not list.
+        {"\4miku\4cute\0\0\1\0\376"sv, DNSError::DeserializeInvalidValue},
         {"\x41\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {"\x7Fx3com\0\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostLabelSize},
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077a23456789012345678901234567890123456789012345678901234567890123\077b23456789012345678901234567890123456789012345678901234567890123\003com\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
@@ -363,21 +381,22 @@ int main() {
         {"\077x23456789012345678901234567890123456789012345678901234567890123\077y23456789012345678901234567890123456789012345678901234567890123\077z23456789012345678901234567890123456789012345678901234567890123\077h23456789012345678901234567890123456789012345678901234567890123\x00\x01\x00\x01"sv, DNSError::DNSHostToHostExcessiveHostnameSize},
     };
 
+    // The name's premature EOF peeks outside blobify, so the exception the caller asked the stream
+    // for reaches the caller rather than an error code.
     "question exceptional istream"_test = [] (const auto &fuzz) {
         fip::context ctx(true);
         std::ispanstream ss(fuzz);
         ss.exceptions(std::ispanstream::failbit | std::ispanstream::eofbit | std::ispanstream::badbit );
 
         jump_table_t jump_table;
-        const auto result = DNSQuestion::deserialize(ctx, ss, jump_table);
-        expect(!result.has_value());
-        std::error_code code = result.error();
-        expect(eq(code.category().name(), std::iostream_category().name()));
-        expect(eq(static_cast<std::io_errc>(result.error().value()), std::io_errc::stream));
+        const auto deserialize = [&] { return DNSQuestion::deserialize(ctx, ss, jump_table); };
+        expect(throws<std::ios_base::failure>(deserialize)) << fuzz;
     } | std::vector {
-        "9x"sv,
+        // The second label claims four octets and has two.
+        "\4miku\4cu"sv,
     };
 
+    // The streambuf throws reading the name, outside blobify, so its exception reaches the caller.
     "question stream failure"_test = [] (const auto &pair) {
         auto& [in, failcount] = pair;
         fip::context ctx(true);
@@ -385,12 +404,25 @@ int main() {
         std::istream ss(&sb);
 
         jump_table_t jump_table;
-        const auto result = DNSQuestion::deserialize(ctx, ss, jump_table);
-        expect(!result.has_value());
-        expect(eq(result.error(), DNSError::DeserializeUnexpectedException)) << '"' << in << '"';
+        const auto deserialize = [&] { return DNSQuestion::deserialize(ctx, ss, jump_table); };
+        expect(eq(outcome_of(deserialize), "mock stream failure"sv)) << '"' << in << '"';
     } | std::vector<std::pair<std::string_view, size_t>> {
         {"\013examplxxxxx\003com\0"sv, 1},
         {"\013axamplxxxxx\012emotionals\0"sv, 13},
+    };
+
+    // With badbit in the mask, istream::read rethrows what the streambuf throws inside blobify's
+    // load, and the adapter converts only system_error, so it reaches the caller.
+    "question deserialize exception"_test = [] {
+        fip::context ctx(true);
+        // The streambuf throws reading the second octet of QTYPE, after the name's eleven.
+        throws_after_failcount_streambuf<11> sb("\4miku\4cute\0\0\1\0\1"sv);
+        std::istream ss(&sb);
+        ss.exceptions(std::ios_base::badbit);
+
+        jump_table_t jump_table;
+        const auto deserialize = [&] { return DNSQuestion::deserialize(ctx, ss, jump_table); };
+        expect(eq(outcome_of(deserialize), "mock stream failure"sv));
     };
 
     "serialize"_test = [] (const auto &pair) {
@@ -670,6 +702,27 @@ int main() {
         {static_cast<DNSQueryType>(46), RData_A {}},
     };
 
+    "serialize rdata of another type"_test = [] (const auto& mismatched) {
+        const auto& [type, rdata] = mismatched;
+        fip::context ctx(39, true);
+        DNSResourceRecord record { "miku.cute", { type, DNSQueryClass::IN, 60, 0 }, rdata };
+        std::array<char, 100> buf;
+        std::ospanstream ss(buf);
+
+        const auto serialized = record.serialize(ctx, ss);
+        expect(!serialized.has_value()) << enum_name_or_value(type);
+        if (!serialized) {
+            expect(eq(serialized.error(), DNSError::SerializeMismatchedRdata)) << enum_name_or_value(type);
+        }
+        // Refused before the name, so no header claims rdata of a type that never follows.
+        expect(ss.span().empty()) << enum_name_or_value(type);
+    } | std::vector<std::pair<DNSQueryType, DNSResourceRecord::RDataVariant_t>> {
+        {DNSQueryType::A, RData_AAAA {}},
+        {DNSQueryType::AAAA, RData_A {}},
+        {DNSQueryType::TXT, RData_A {}},
+        {DNSQueryType::OPT, RData_TXT {}},
+    };
+
     "serialize txt string at size limit"_test = [] {
         fip::context ctx(39, true);
         // The limit is spelled out, not taken from the constant under test.
@@ -936,7 +989,7 @@ int main() {
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\56\0\1\0\0\0\0\0\10abc"sv,
     };
 
-    "exception log names the catching function"_test = [] {
+    "exception log names the calling function"_test = [] {
         std::ispanstream ss {"\314\347\201"sv};
         fip::context ctx(39, true);
         std::vector<std::string> printed;
@@ -946,6 +999,21 @@ int main() {
         expect(eq(message.has_value(), false));
         expect(std::ranges::any_of(printed, [](const std::string& line) {
             return line.contains("system_error exception!") && line.contains("DNSMessage::deserialize");
+        })) << std::format("{}", printed);
+    };
+
+    "invalid value log names the value"_test = [] {
+        // QTYPE 65 (HTTPS, RFC 9460), which DNSQueryType does not list.
+        std::ispanstream ss {"\4miku\4cute\0\0\101\0\1"sv};
+        fip::context ctx(39, true);
+        std::vector<std::string> printed;
+        ctx.log.hook_print = [&](const std::string_view& msg) { printed.emplace_back(msg); };
+
+        jump_table_t jump_table;
+        const auto question = DNSQuestion::deserialize(ctx, ss, jump_table);
+        expect(eq(question.has_value(), false));
+        expect(std::ranges::any_of(printed, [](const std::string& line) {
+            return line.contains("invalid DNSQueryType 65") && line.contains("DNSQuestion::deserialize");
         })) << std::format("{}", printed);
     };
 

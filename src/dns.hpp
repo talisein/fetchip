@@ -173,8 +173,8 @@ struct DNSQuestion {
     std::string qname;      // Domain name being queried
     DNSQuestionBlob blob;
 
-    std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const noexcept;
-    static std::expected<DNSQuestion, std::error_code> deserialize(fip::context& ctx, std::istream &is, jump_table_t& jump_table) noexcept;
+    std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const;
+    static std::expected<DNSQuestion, std::error_code> deserialize(fip::context& ctx, std::istream &is, jump_table_t& jump_table);
 };
 
 // Struct for RDATA in DNSAnswer for A (IPv4 address) records
@@ -262,8 +262,8 @@ struct DNSOption {
 struct RData_OPT {
     std::vector<DNSOption> options; // octet stream of {attribute, value} pairs
 
-    std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const noexcept;
-    static std::expected<RData_OPT, std::error_code> deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexcept;
+    std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const;
+    static std::expected<RData_OPT, std::error_code> deserialize(fip::context& ctx, std::istream &is, size_t rdlen);
 };
 
 struct DNSResourceRecordBlob {
@@ -293,24 +293,23 @@ struct DNSResourceRecord {
     DNSResourceRecordBlob blob;
     RDataVariant_t rdata;
 
-    std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const noexcept;
-    static std::expected<DNSResourceRecord, std::error_code> deserialize(fip::context& ctx, std::istream &is, jump_table_t& jump_table) noexcept;
+    std::expected<void, std::error_code> serialize(fip::context& ctx, std::ostream &os) const;
+    static std::expected<DNSResourceRecord, std::error_code> deserialize(fip::context& ctx, std::istream &is, jump_table_t& jump_table);
 };
 
 enum class DNSError
 {
-    BlobifyStore,
     HostToDNSHostExcessiveHostLabelSize,
     HostToDNSHostExcessiveHostnameSize,
     HostToDNSHostEmptyLabel,
-    SerializeUnexpectedException,
     SerializeStreamFailure,
     SerializeExcessiveTextSize,
     SerializeExcessiveRdataSize,
     SerializeUnimplementedType,
-    DeserializeUnexpectedException,
+    SerializeMismatchedRdata,
     DeserializeStreamFailure,
     DeserializePrematureEOF,
+    DeserializeInvalidValue,
     DNSHostToHostPrematureEOF,
     DNSHostToHostStreamFailure,
     DNSHostToHostExcessiveHostLabelSize,
@@ -388,8 +387,8 @@ class DNSMessage
 
 public:
     DNSMessage(fip::context& ctx) noexcept;
-    [[nodiscard]] std::expected<void, std::error_code> serialize(std::ostream& os) const noexcept;
-    [[nodiscard]] static std::expected<DNSMessage, std::error_code> deserialize(fip::context& ctx, std::istream& os) noexcept;
+    [[nodiscard]] std::expected<void, std::error_code> serialize(std::ostream& os) const;
+    [[nodiscard]] static std::expected<DNSMessage, std::error_code> deserialize(fip::context& ctx, std::istream& os);
 
     void add_question(std::string_view hostname, DNSQueryType qtype) { questions.emplace_back(std::string(hostname), DNSQuestionBlob{qtype, DNSQueryClass::IN}); ++header.qdcount; }
 

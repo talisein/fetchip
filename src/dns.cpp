@@ -1,13 +1,16 @@
 #include <algorithm>
 #include <expected>
+#include <format>
 #include <functional>
 #include <optional>
 #include <source_location>
 #include <ranges>
 #include <iterator>
 #include <spanstream>
+#include <system_error>
 
 #include <blobify/blobify.hpp>
+#include <boost/pfr/core.hpp>
 
 #include "context.hpp"
 #include "dns.hpp"
@@ -22,35 +25,6 @@ EDNS_ResourceRecord::EDNS_ResourceRecord(const DNSResourceRecordBlob& rr) :
     rdlength(rr.rdlength)
 {
 }
-
-static std::error_code
-dns_exception_handler(fip::context& ctx,
-                      DNSError unexpected,
-                      std::source_location src = std::source_location::current()) noexcept
-{
-    try {
-        throw;
-    } catch (blob::exception& e) {
-        ctx.log.debug("blobify exception! {} typeid {}", src.function_name(), typeid(e).name());
-        return DNSError::BlobifyStore;
-    } catch (std::ios_base::failure& failure) {
-        ctx.log.debug("std::ios_base::failure exception! {} value: {} what: {} message: {}",
-                      src.function_name(), failure.code().value(), failure.what(), failure.code().message());
-        return failure.code();
-    } catch (std::system_error& e) {
-        ctx.log.debug("system_error exception! {} value: {} what: {} message: {}",
-                      src.function_name(), e.code().value(), e.what(), e.code().message());
-        return e.code();
-    } catch (std::exception& e) {
-        ctx.log.debug("exception! {} what: {}",
-                      src.function_name(), e.what());
-        return make_error_code(unexpected);
-    } catch (...) {
-        ctx.log.debug("unexpected exception! {}", src.function_name());
-        return make_error_code(unexpected);
-    }
-}
-
 
 namespace {
     // An ostreambuf_iterator records a short write only in itself, never in the stream.
@@ -69,6 +43,64 @@ namespace {
         const auto copied = std::ranges::copy(stream, std::ranges::begin(bytes));
         if (copied.out != std::ranges::end(bytes)) {
             return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+        }
+        return {};
+    }
+
+    // Names the enum value blobify's validation refused loading a T, from the exception in flight.
+    template <typename T, size_t member = 0>
+    [[nodiscard]] std::string
+    invalid_value_text() {
+        if constexpr (member == boost::pfr::tuple_size_v<T>) {
+            return "value";
+        } else {
+            using member_type = boost::pfr::tuple_element_t<member, T>;
+            if constexpr (std::is_enum_v<member_type>) {
+                try {
+                    throw;
+                } catch (const blob::invalid_enum_value_exception<member_type>& e) {
+                    const auto value = enum_name_or_value(e.actual_value);
+                    return std::format("{} {}", magic_enum::enum_type_name<member_type>(), value);
+                } catch (const blob::exception&) {
+                    // Not this member's enum; a later member may name it.
+                }
+            }
+            return invalid_value_text<T, member + 1>();
+        }
+    }
+
+    // Converts what blobify throws loading a T (a short read, a refused value) into an error code.
+    template <typename T>
+    [[nodiscard]] std::expected<T, std::error_code>
+    load_blob(fip::context& ctx,
+              BlobLoader& loader,
+              std::source_location src = std::source_location::current()) {
+        try {
+            return blob::load<T>(loader, blob::tag<fetchip_construction_policy>());
+        } catch (const std::system_error& e) {
+            ctx.log.debug("system_error exception! {} value: {} what: {} message: {}",
+                          src.function_name(), e.code().value(), e.what(), e.code().message());
+            return std::unexpected(e.code());
+        } catch (const blob::exception&) {
+            // blobify's storage_exhausted_exception comes only from its own storage backends, never
+            // BlobLoader, so what reaches here is a field its validation refused.
+            ctx.log.debug("{}: invalid {}", src.function_name(), invalid_value_text<T>());
+            return std::unexpected(make_error_code(DNSError::DeserializeInvalidValue));
+        }
+    }
+
+    // Converts what blobify throws storing a value (a short write) into an error code.
+    [[nodiscard]] std::expected<void, std::error_code>
+    store_blob(fip::context& ctx,
+               BlobStorer& storage,
+               const auto& value,
+               std::source_location src = std::source_location::current()) {
+        try {
+            blob::store(storage, value, blob::tag<fetchip_construction_policy>());
+        } catch (const std::system_error& e) {
+            ctx.log.debug("system_error exception! {} value: {} what: {} message: {}",
+                          src.function_name(), e.code().value(), e.what(), e.code().message());
+            return std::unexpected(e.code());
         }
         return {};
     }
@@ -238,316 +270,315 @@ DNSMessage::DNSMessage(fip::context& ctx) noexcept :
 }
 
 std::expected<void, std::error_code>
-RData_OPT::serialize(fip::context& ctx, std::ostream &os) const noexcept
+RData_OPT::serialize(fip::context& ctx, std::ostream &os) const
 {
     BlobStorer storage(os);
-    try {
-        // Checked whole before the first option is written. Each OPTION-LENGTH counts part of the
-        // rdata, so rdata that fits RDLENGTH leaves no option too long for its own.
-        const auto rdlength = rdlength_of(ctx, rdata_octets(*this));
-        if (!rdlength) {
-            return std::unexpected(rdlength.error());
+    // Checked whole before the first option is written. Each OPTION-LENGTH counts part of the
+    // rdata, so rdata that fits RDLENGTH leaves no option too long for its own.
+    const auto rdlength = rdlength_of(ctx, rdata_octets(*this));
+    if (!rdlength) {
+        return std::unexpected(rdlength.error());
+    }
+    for (const auto& option : options) {
+        // OPTION-LENGTH is the size of the data written after it, never the stored blob.data_size.
+        auto header = option.blob;
+        header.data_size = static_cast<uint16_t>(option.data.size());
+        if (auto res = store_blob(ctx, storage, header); !res) {
+            return std::unexpected(res.error());
         }
-        for (const auto& option : options) {
-            // OPTION-LENGTH is the size of the data written after it, never the stored blob.data_size.
-            auto header = option.blob;
-            header.data_size = static_cast<uint16_t>(option.data.size());
-            blob::store(storage, header, blob::tag<fetchip_construction_policy>());
-            if (auto res = store_bytes(option.data, os); !res) {
-                return std::unexpected(res.error());
-            }
+        if (auto res = store_bytes(option.data, os); !res) {
+            return std::unexpected(res.error());
         }
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::SerializeUnexpectedException));
     }
 
     return {};
 }
 
 std::expected<RData_OPT, std::error_code>
-RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen) noexcept
+RData_OPT::deserialize(fip::context& ctx, std::istream &is, size_t rdlen)
 {
-    try {
-        // Options are parsed from the rdata alone, so no option can reach the records after it.
-        std::vector<char> rdata;
-        std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(rdlen), std::back_inserter(rdata));
-        if (rdata.size() != rdlen) {
-            ctx.log.debug("Premature EOF deserializing OPT record. {} < {}", rdata.size(), rdlen);
+    // Options are parsed from the rdata alone, so no option can reach the records after it.
+    std::vector<char> rdata;
+    std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(rdlen), std::back_inserter(rdata));
+    if (rdata.size() != rdlen) {
+        ctx.log.debug("Premature EOF deserializing OPT record. {} < {}", rdata.size(), rdlen);
+        return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+    }
+
+    std::ispanstream rdata_stream {rdata};
+    BlobLoader loader(rdata_stream);
+    RData_OPT res {};
+    auto rdata_left = rdata.size();
+    while (rdata_left > 0) {
+        if (rdata_left < option_header_octets) {
+            ctx.log.debug("Option header overruns the {} bytes of rdata left", rdata_left);
             return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
         }
-
-        std::ispanstream rdata_stream {rdata};
-        BlobLoader loader(rdata_stream);
-        RData_OPT res {};
-        auto rdata_left = rdata.size();
-        while (rdata_left > 0) {
-            if (rdata_left < option_header_octets) {
-                ctx.log.debug("Option header overruns the {} bytes of rdata left", rdata_left);
-                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-            }
-            DNSOption option {};
-            option.blob = blob::load<DNSOptionBlob>(loader, blob::tag<fetchip_construction_policy>());
-            auto input_range = std::ranges::subrange(std::istreambuf_iterator(rdata_stream), std::istreambuf_iterator<char>());
-            std::ranges::copy(input_range | std::views::take(option.blob.data_size), std::back_inserter(option.data));
-            if (option.data.size() < option.blob.data_size) {
-                ctx.log.debug("Option {} data size {} overruns the {} bytes of rdata left",
-                              enum_name_or_value(option.blob.option_code),
-                              option.blob.data_size,
-                              option.data.size());
-                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-            }
-            rdata_left -= option_header_octets + option.data.size();
-            res.options.push_back(std::move(option));
+        const auto header = load_blob<DNSOptionBlob>(ctx, loader);
+        if (!header) {
+            return std::unexpected(header.error());
         }
-
-        return res;
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::DeserializeUnexpectedException));
+        DNSOption option { *header, {} };
+        auto input_range = std::ranges::subrange(std::istreambuf_iterator(rdata_stream), std::istreambuf_iterator<char>());
+        std::ranges::copy(input_range | std::views::take(option.blob.data_size), std::back_inserter(option.data));
+        if (option.data.size() < option.blob.data_size) {
+            ctx.log.debug("Option {} data size {} overruns the {} bytes of rdata left",
+                          enum_name_or_value(option.blob.option_code),
+                          option.blob.data_size,
+                          option.data.size());
+            return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+        }
+        rdata_left -= option_header_octets + option.data.size();
+        res.options.push_back(std::move(option));
     }
+
+    return res;
 }
 
 
 std::expected<void, std::error_code>
-DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
+DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const
 {
     BlobStorer storage(os);
 
-    try {
-        // Each case takes and checks its rdata before calling store_header, so a record that cannot be serialized writes nothing.
-        // RDLENGTH is the size of the rdata the case writes, never the stored blob.rdlength, and is
-        // refused before the name if it does not fit.
-        const auto store_header = [&](size_t octets) -> std::expected<void, std::error_code> {
-            const auto rdlength = rdlength_of(ctx, octets);
-            if (!rdlength) {
-                return std::unexpected(rdlength.error());
+    // Each case takes and checks its rdata before calling store_header, so a record that cannot be serialized writes nothing.
+    // RDLENGTH is the size of the rdata the case writes, never the stored blob.rdlength, and is
+    // refused before the name if it does not fit.
+    const auto store_header = [&](size_t octets) -> std::expected<void, std::error_code> {
+        const auto rdlength = rdlength_of(ctx, octets);
+        if (!rdlength) {
+            return std::unexpected(rdlength.error());
+        }
+        if (auto res = host_to_dnshost(ctx, name, os); !res) {
+            return std::unexpected(res.error());
+        }
+        auto header = blob;
+        header.rdlength = *rdlength;
+        return store_blob(ctx, storage, header);
+    };
+    // Each case takes its rdata with std::get_if, since std::get throws for an alternative TYPE does not name.
+    const auto mismatched = [&] {
+        ctx.log.debug("Resource record type {} holds rdata of another type", enum_name_or_value(blob.type));
+        return std::unexpected(make_error_code(DNSError::SerializeMismatchedRdata));
+    };
+
+    switch (blob.type) {
+        case DNSQueryType::A: {
+            const auto* a = std::get_if<RData_A>(&rdata);
+            if (a == nullptr) {
+                return mismatched();
             }
-            if (auto res = host_to_dnshost(ctx, name, os); !res) {
+            if (auto res = store_header(a->ipv4_address.size()); !res) {
                 return std::unexpected(res.error());
             }
-            auto header = blob;
-            header.rdlength = *rdlength;
-            blob::store(storage, header, blob::tag<fetchip_construction_policy>());
-            return {};
-        };
-
-        switch (blob.type) {
-            case DNSQueryType::A: {
-                const auto& a = std::get<RData_A>(rdata);
-                if (auto res = store_header(a.ipv4_address.size()); !res) {
-                    return std::unexpected(res.error());
-                }
-                return store_bytes(a.ipv4_address, os);
-            }
-            case DNSQueryType::AAAA: {
-                const auto& aaaa = std::get<RData_AAAA>(rdata);
-                if (auto res = store_header(aaaa.ipv6_address.size()); !res) {
-                    return std::unexpected(res.error());
-                }
-                return store_bytes(aaaa.ipv6_address, os);
-            }
-            case DNSQueryType::TXT: {
-                const auto& txt = std::get<RData_TXT>(rdata);
-                if (auto oversized = std::ranges::find_if(txt.strings, [](const auto& s) { return max_character_string_octets < s.size(); });
-                    oversized != txt.strings.end()) {
-                    ctx.log.debug("TXT string too long to serialize: {} > {} bytes", oversized->size(), max_character_string_octets);
-                    return std::unexpected(make_error_code(DNSError::SerializeExcessiveTextSize));
-                }
-                if (auto res = store_header(rdata_octets(txt)); !res) {
-                    return std::unexpected(res.error());
-                }
-                for (const auto& text : txt.strings) {
-                    if (auto res = store_bytes(std::views::single(static_cast<char>(text.size())), os); !res) {
-                        return std::unexpected(res.error());
-                    }
-                    if (auto res = store_bytes(text, os); !res) {
-                        return std::unexpected(res.error());
-                    }
-                }
-                return {};
-            }
-            case DNSQueryType::OPT: {
-                const auto& opt = std::get<RData_OPT>(rdata);
-                if (auto res = store_header(rdata_octets(opt)); !res) {
-                    return std::unexpected(res.error());
-                }
-                return opt.serialize(ctx, os);
-            }
-            default:
-                ctx.log.debug("Unimplemented! Cannot serialize resource record type {}", enum_name_or_value(blob.type));
-                return std::unexpected(make_error_code(DNSError::SerializeUnimplementedType));
+            return store_bytes(a->ipv4_address, os);
         }
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::SerializeUnexpectedException));
+        case DNSQueryType::AAAA: {
+            const auto* aaaa = std::get_if<RData_AAAA>(&rdata);
+            if (aaaa == nullptr) {
+                return mismatched();
+            }
+            if (auto res = store_header(aaaa->ipv6_address.size()); !res) {
+                return std::unexpected(res.error());
+            }
+            return store_bytes(aaaa->ipv6_address, os);
+        }
+        case DNSQueryType::TXT: {
+            const auto* txt = std::get_if<RData_TXT>(&rdata);
+            if (txt == nullptr) {
+                return mismatched();
+            }
+            if (auto oversized = std::ranges::find_if(txt->strings, [](const auto& s) { return max_character_string_octets < s.size(); });
+                oversized != txt->strings.end()) {
+                ctx.log.debug("TXT string too long to serialize: {} > {} bytes", oversized->size(), max_character_string_octets);
+                return std::unexpected(make_error_code(DNSError::SerializeExcessiveTextSize));
+            }
+            if (auto res = store_header(rdata_octets(*txt)); !res) {
+                return std::unexpected(res.error());
+            }
+            for (const auto& text : txt->strings) {
+                if (auto res = store_bytes(std::views::single(static_cast<char>(text.size())), os); !res) {
+                    return std::unexpected(res.error());
+                }
+                if (auto res = store_bytes(text, os); !res) {
+                    return std::unexpected(res.error());
+                }
+            }
+            return {};
+        }
+        case DNSQueryType::OPT: {
+            const auto* opt = std::get_if<RData_OPT>(&rdata);
+            if (opt == nullptr) {
+                return mismatched();
+            }
+            if (auto res = store_header(rdata_octets(*opt)); !res) {
+                return std::unexpected(res.error());
+            }
+            return opt->serialize(ctx, os);
+        }
+        default:
+            ctx.log.debug("Unimplemented! Cannot serialize resource record type {}", enum_name_or_value(blob.type));
+            return std::unexpected(make_error_code(DNSError::SerializeUnimplementedType));
     }
 }
 
 std::expected<DNSResourceRecord, std::error_code>
-DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t& jump_table) noexcept
+DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t& jump_table)
 {
     BlobLoader loader(is);
+    DNSResourceRecord res;
 
-    try {
-        DNSResourceRecord res;
-
-        if (auto hostname = dnshost_to_host(ctx, is, jump_table); !hostname) {
-            ctx.log.debug("Failed to deserialize resource record name: {}", hostname.error().message());
-            return std::unexpected(hostname.error());
-        } else {
-            res.name = *hostname;
-        }
-        ctx.log.debug("Got hostname '{}'", res.name);
-
-        res.blob = blob::load<DNSResourceRecordBlob>(loader, blob::tag<fetchip_construction_policy>());
-
-        ctx.log.debug("Got blob type '{}'", enum_name_or_value(res.blob.type));
-
-        RData_A a {};
-        RData_AAAA aaaa {};
-        RData_TXT txt {};
-        std::string txt_rdata;
-        std::expected<RData_OPT, std::error_code> opt;
-        switch (res.blob.type) {
-            case DNSQueryType::A:
-                if (res.blob.rdlength != a.ipv4_address.size()) {
-                    ctx.log.debug("A record with rdlength {}", res.blob.rdlength);
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-                }
-                if (auto loaded = load_bytes(a.ipv4_address, is); !loaded) {
-                    ctx.log.debug("Premature EOF deserializing A record");
-                    return std::unexpected(loaded.error());
-                }
-                res.rdata = a;
-                break;
-            case DNSQueryType::AAAA:
-                if (res.blob.rdlength != aaaa.ipv6_address.size()) {
-                    ctx.log.debug("AAAA record with rdlength {}", res.blob.rdlength);
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-                }
-                if (auto loaded = load_bytes(aaaa.ipv6_address, is); !loaded) {
-                    ctx.log.debug("Premature EOF deserializing AAAA record");
-                    return std::unexpected(loaded.error());
-                }
-                res.rdata = aaaa;
-                break;
-            case DNSQueryType::TXT:
-                if (res.blob.rdlength == 0) {
-                    ctx.log.debug("TXT record with rdlength 0");
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-                }
-                std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(res.blob.rdlength), std::back_inserter(txt_rdata));
-                if (txt_rdata.size() != res.blob.rdlength) {
-                    ctx.log.debug("Premature EOF deserializing TXT record. {} < {}", txt_rdata.size(), res.blob.rdlength);
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-                }
-                // The rdata is a run of character-strings, each a length byte and that many bytes.
-                for (std::string_view rest {txt_rdata}; !rest.empty(); ) {
-                    const auto txt_len = static_cast<uint8_t>(rest.front());
-                    rest.remove_prefix(1);
-                    if (txt_len > rest.size()) {
-                        ctx.log.debug("TXT string length {} overruns the {} bytes left", txt_len, rest.size());
-                        return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-                    }
-                    txt.strings.emplace_back(rest.substr(0, txt_len));
-                    rest.remove_prefix(txt_len);
-                }
-                res.rdata = txt;
-                break;
-            case DNSQueryType::OPT:
-                opt = RData_OPT::deserialize(ctx, is, res.blob.rdlength);
-                if (opt) {
-                    res.rdata = *opt;
-                } else {
-                    return std::unexpected(opt.error());
-                }
-                break;
-            default:
-                // Skipped whole, so a CNAME ahead of the answer leaves the records after it readable.
-                ctx.log.debug("Skipping {} bytes of unimplemented resource record type {}", res.blob.rdlength, enum_name_or_value(res.blob.type));
-                if (is.ignore(res.blob.rdlength).gcount() != res.blob.rdlength) {
-                    ctx.log.debug("Premature EOF skipping {} record", enum_name_or_value(res.blob.type));
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
-                }
-                break;
-        }
-
-        return res;
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::DeserializeUnexpectedException));
+    if (auto hostname = dnshost_to_host(ctx, is, jump_table); !hostname) {
+        ctx.log.debug("Failed to deserialize resource record name: {}", hostname.error().message());
+        return std::unexpected(hostname.error());
+    } else {
+        res.name = *hostname;
     }
+    ctx.log.debug("Got hostname '{}'", res.name);
+
+    const auto header = load_blob<DNSResourceRecordBlob>(ctx, loader);
+    if (!header) {
+        return std::unexpected(header.error());
+    }
+    res.blob = *header;
+
+    ctx.log.debug("Got blob type '{}'", enum_name_or_value(res.blob.type));
+
+    RData_A a {};
+    RData_AAAA aaaa {};
+    RData_TXT txt {};
+    std::string txt_rdata;
+    std::expected<RData_OPT, std::error_code> opt;
+    switch (res.blob.type) {
+        case DNSQueryType::A:
+            if (res.blob.rdlength != a.ipv4_address.size()) {
+                ctx.log.debug("A record with rdlength {}", res.blob.rdlength);
+                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+            }
+            if (auto loaded = load_bytes(a.ipv4_address, is); !loaded) {
+                ctx.log.debug("Premature EOF deserializing A record");
+                return std::unexpected(loaded.error());
+            }
+            res.rdata = a;
+            break;
+        case DNSQueryType::AAAA:
+            if (res.blob.rdlength != aaaa.ipv6_address.size()) {
+                ctx.log.debug("AAAA record with rdlength {}", res.blob.rdlength);
+                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+            }
+            if (auto loaded = load_bytes(aaaa.ipv6_address, is); !loaded) {
+                ctx.log.debug("Premature EOF deserializing AAAA record");
+                return std::unexpected(loaded.error());
+            }
+            res.rdata = aaaa;
+            break;
+        case DNSQueryType::TXT:
+            if (res.blob.rdlength == 0) {
+                ctx.log.debug("TXT record with rdlength 0");
+                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+            }
+            std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(res.blob.rdlength), std::back_inserter(txt_rdata));
+            if (txt_rdata.size() != res.blob.rdlength) {
+                ctx.log.debug("Premature EOF deserializing TXT record. {} < {}", txt_rdata.size(), res.blob.rdlength);
+                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+            }
+            // The rdata is a run of character-strings, each a length byte and that many bytes.
+            for (std::string_view rest {txt_rdata}; !rest.empty(); ) {
+                const auto txt_len = static_cast<uint8_t>(rest.front());
+                rest.remove_prefix(1);
+                if (txt_len > rest.size()) {
+                    ctx.log.debug("TXT string length {} overruns the {} bytes left", txt_len, rest.size());
+                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                }
+                txt.strings.emplace_back(rest.substr(0, txt_len));
+                rest.remove_prefix(txt_len);
+            }
+            res.rdata = txt;
+            break;
+        case DNSQueryType::OPT:
+            opt = RData_OPT::deserialize(ctx, is, res.blob.rdlength);
+            if (opt) {
+                res.rdata = *opt;
+            } else {
+                return std::unexpected(opt.error());
+            }
+            break;
+        default:
+            // Skipped whole, so a CNAME ahead of the answer leaves the records after it readable.
+            ctx.log.debug("Skipping {} bytes of unimplemented resource record type {}", res.blob.rdlength, enum_name_or_value(res.blob.type));
+            if (is.ignore(res.blob.rdlength).gcount() != res.blob.rdlength) {
+                ctx.log.debug("Premature EOF skipping {} record", enum_name_or_value(res.blob.type));
+                return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+            }
+            break;
+    }
+
+    return res;
 }
 
 std::expected<void, std::error_code>
-DNSQuestion::serialize(fip::context& ctx, std::ostream& os) const noexcept
+DNSQuestion::serialize(fip::context& ctx, std::ostream& os) const
 {
     BlobStorer storage(os);
 
-    try {
-        if (auto res = host_to_dnshost(ctx, qname, os); !res) {
-            return std::unexpected(res.error());
-        }
-        blob::store(storage, blob, blob::tag<fetchip_construction_policy>());
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::SerializeUnexpectedException));
+    if (auto res = host_to_dnshost(ctx, qname, os); !res) {
+        return std::unexpected(res.error());
     }
-
-    return {};
+    return store_blob(ctx, storage, blob);
 }
 
 std::expected<DNSQuestion, std::error_code>
-DNSQuestion::deserialize(fip::context& ctx, std::istream& is, jump_table_t& jump_table) noexcept
+DNSQuestion::deserialize(fip::context& ctx, std::istream& is, jump_table_t& jump_table)
 {
     BlobLoader loader(is);
+    DNSQuestion res;
 
-    try {
-        DNSQuestion res;
-
-        if (auto hostname = dnshost_to_host(ctx, is, jump_table); !hostname) {
-            ctx.log.debug("Failed to deserialize question name: {}", hostname.error().message());
-            return std::unexpected(hostname.error());
-        } else {
-            res.qname = *hostname;
-        }
-
-        res.blob = blob::load<DNSQuestionBlob>(loader, blob::tag<fetchip_construction_policy>());
-        return res;
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::DeserializeUnexpectedException));
+    if (auto hostname = dnshost_to_host(ctx, is, jump_table); !hostname) {
+        ctx.log.debug("Failed to deserialize question name: {}", hostname.error().message());
+        return std::unexpected(hostname.error());
+    } else {
+        res.qname = *hostname;
     }
+
+    const auto type_and_class = load_blob<DNSQuestionBlob>(ctx, loader);
+    if (!type_and_class) {
+        return std::unexpected(type_and_class.error());
+    }
+    res.blob = *type_and_class;
+    return res;
 }
 
 std::expected<void, std::error_code>
-DNSMessage::serialize(std::ostream& os) const noexcept
+DNSMessage::serialize(std::ostream& os) const
 {
     BlobStorer storage(os);
 
-    try {
-        blob::store(storage, header, blob::tag<fetchip_construction_policy>());
-        for (const auto& question : questions) {
-            if (auto res = question.serialize(ctx, os); !res) {
-                ctx.log.debug("Failed to serialize questions: {}", res.error().message());
-                return std::unexpected(res.error());
-            }
+    if (auto res = store_blob(ctx, storage, header); !res) {
+        return std::unexpected(res.error());
+    }
+    for (const auto& question : questions) {
+        if (auto res = question.serialize(ctx, os); !res) {
+            ctx.log.debug("Failed to serialize questions: {}", res.error().message());
+            return std::unexpected(res.error());
         }
-        for (const auto& answer : answers) {
-            if (auto res = answer.serialize(ctx, os); !res) {
-                ctx.log.debug("Failed to serialize answers: {}", res.error().message());
-                return std::unexpected(res.error());
-            }
+    }
+    for (const auto& answer : answers) {
+        if (auto res = answer.serialize(ctx, os); !res) {
+            ctx.log.debug("Failed to serialize answers: {}", res.error().message());
+            return std::unexpected(res.error());
         }
-        for (const auto& authority : authorities) {
-            if (auto res = authority.serialize(ctx, os); !res) {
-                ctx.log.debug("Failed to serialize authorities: {}", res.error().message());
-                return std::unexpected(res.error());
-            }
+    }
+    for (const auto& authority : authorities) {
+        if (auto res = authority.serialize(ctx, os); !res) {
+            ctx.log.debug("Failed to serialize authorities: {}", res.error().message());
+            return std::unexpected(res.error());
         }
-        for (const auto& additional : additionals) {
-            if (auto res = additional.serialize(ctx, os); !res) {
-                ctx.log.debug("Failed to serialize additionals: {}", res.error().message());
-                return std::unexpected(res.error());
-            }
+    }
+    for (const auto& additional : additionals) {
+        if (auto res = additional.serialize(ctx, os); !res) {
+            ctx.log.debug("Failed to serialize additionals: {}", res.error().message());
+            return std::unexpected(res.error());
         }
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::SerializeUnexpectedException));
     }
 
     return {};
@@ -570,56 +601,55 @@ namespace {
 }
 
 std::expected<DNSMessage, std::error_code>
-DNSMessage::deserialize(fip::context& ctx, std::istream& is) noexcept
+DNSMessage::deserialize(fip::context& ctx, std::istream& is)
 {
     BlobLoader loader(is);
+    DNSMessage res(ctx);
+    jump_table_t jump_table;
 
-    try {
-        DNSMessage res(ctx);
-        jump_table_t jump_table;
-
-        res.header = blob::load<DNSHeader>(loader, blob::tag<fetchip_construction_policy>());
-        ctx.log.debug("Got header {}", res.header);
-
-        auto questions = deserialize_section<DNSQuestion>(ctx, is, jump_table, res.header.qdcount);
-        if (!questions) {
-            ctx.log.debug("Failed to deserialize questions: {}", questions.error().message());
-            return std::unexpected(questions.error());
-        }
-        res.questions = std::move(*questions);
-        for (const auto &q : res.questions) {
-            ctx.log.debug("Got question {}", q);
-        }
-        auto answers = deserialize_section<DNSResourceRecord>(ctx, is, jump_table, res.header.ancount);
-        if (!answers) {
-            ctx.log.debug("Failed to deserialize answers: {}", answers.error().message());
-            return std::unexpected(answers.error());
-        }
-        res.answers = std::move(*answers);
-        for (const auto &q : res.answers) {
-            ctx.log.debug("Got answer {}", q);
-        }
-        auto authorities = deserialize_section<DNSResourceRecord>(ctx, is, jump_table, res.header.nscount);
-        if (!authorities) {
-            ctx.log.debug("Failed to deserialize authorities: {}", authorities.error().message());
-            return std::unexpected(authorities.error());
-        }
-        res.authorities = std::move(*authorities);
-        for (const auto &q : res.authorities) {
-            ctx.log.debug("Got authority {}", q);
-        }
-        auto additionals = deserialize_section<DNSResourceRecord>(ctx, is, jump_table, res.header.arcount);
-        if (!additionals) {
-            ctx.log.debug("Failed to deserialize additionals: {}", additionals.error().message());
-            return std::unexpected(additionals.error());
-        }
-        res.additionals = std::move(*additionals);
-        for (const auto &q : res.additionals) {
-            ctx.log.debug("Got additional {}", q);
-        }
-
-        return res;
-    } catch (...) {
-        return std::unexpected(dns_exception_handler(ctx, DNSError::DeserializeUnexpectedException));
+    const auto message_header = load_blob<DNSHeader>(ctx, loader);
+    if (!message_header) {
+        return std::unexpected(message_header.error());
     }
+    res.header = *message_header;
+    ctx.log.debug("Got header {}", res.header);
+
+    auto questions = deserialize_section<DNSQuestion>(ctx, is, jump_table, res.header.qdcount);
+    if (!questions) {
+        ctx.log.debug("Failed to deserialize questions: {}", questions.error().message());
+        return std::unexpected(questions.error());
+    }
+    res.questions = std::move(*questions);
+    for (const auto &q : res.questions) {
+        ctx.log.debug("Got question {}", q);
+    }
+    auto answers = deserialize_section<DNSResourceRecord>(ctx, is, jump_table, res.header.ancount);
+    if (!answers) {
+        ctx.log.debug("Failed to deserialize answers: {}", answers.error().message());
+        return std::unexpected(answers.error());
+    }
+    res.answers = std::move(*answers);
+    for (const auto &q : res.answers) {
+        ctx.log.debug("Got answer {}", q);
+    }
+    auto authorities = deserialize_section<DNSResourceRecord>(ctx, is, jump_table, res.header.nscount);
+    if (!authorities) {
+        ctx.log.debug("Failed to deserialize authorities: {}", authorities.error().message());
+        return std::unexpected(authorities.error());
+    }
+    res.authorities = std::move(*authorities);
+    for (const auto &q : res.authorities) {
+        ctx.log.debug("Got authority {}", q);
+    }
+    auto additionals = deserialize_section<DNSResourceRecord>(ctx, is, jump_table, res.header.arcount);
+    if (!additionals) {
+        ctx.log.debug("Failed to deserialize additionals: {}", additionals.error().message());
+        return std::unexpected(additionals.error());
+    }
+    res.additionals = std::move(*additionals);
+    for (const auto &q : res.additionals) {
+        ctx.log.debug("Got additional {}", q);
+    }
+
+    return res;
 }
