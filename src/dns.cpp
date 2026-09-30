@@ -184,6 +184,78 @@ namespace {
         return static_cast<uint16_t>(pos);
     }
 
+    std::expected<uint8_t, std::error_code> read_octet(std::istream& is) {
+        auto octets = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
+        uint8_t octet = 0;
+        if (auto copy_result = std::ranges::copy(std::views::take(octets, 1), &octet);
+            copy_result.out == &octet)
+        {
+            return std::unexpected(handle_eof(is));
+        }
+        return octet;
+    }
+
+    struct LengthOctet {
+        uint16_t offset;
+        uint8_t value;
+    };
+
+    std::expected<LengthOctet, std::error_code> read_length_octet(std::istream& is) {
+        const auto offset = wire_offset(is);
+        if (!offset) {
+            return std::unexpected(offset.error());
+        }
+        const auto value = read_octet(is);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        return LengthOctet{*offset, *value};
+    }
+
+    bool is_pointer(uint8_t length_octet) {
+        return (length_octet & compression_pointer_flag) == compression_pointer_flag;
+    }
+
+    std::expected<void, std::error_code> read_label(std::istream& is, uint8_t size, std::string& prefix) {
+        if (max_label_octets < size) {
+            return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostLabelSize));
+        }
+        auto octets = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
+        std::ranges::copy(std::views::take(octets, size), std::back_inserter(prefix));
+        if (octets.empty()) {
+            return std::unexpected(handle_eof(is));
+        }
+        prefix.push_back('.');
+        return {};
+    }
+
+    std::expected<uint16_t, std::error_code> read_pointer_target(std::istream& is, uint8_t length_octet) {
+        const auto low = read_octet(is);
+        if (!low) {
+            return std::unexpected(low.error());
+        }
+        return static_cast<uint16_t>(((length_octet & compression_offset_high_mask) << compression_offset_high_shift) | *low);
+    }
+
+    std::expected<void, std::error_code>
+    follow_pointer(fip::context& ctx, std::istream& is, uint16_t pointer_offset, uint16_t target, std::optional<uint16_t>& resume) {
+        // A pointer may only reference a prior occurrence, so each jump
+        // moves strictly backward and a chain of them must terminate.
+        if (target >= pointer_offset) {
+            ctx.log.debug("Compression pointer at {} jumps forward to {}", pointer_offset, target);
+            return std::unexpected(make_error_code(DNSError::DNSHostToHostBadCompressionPointer));
+        }
+        if (!resume) {
+            const auto after_pointer = wire_offset(is);
+            if (!after_pointer) {
+                return std::unexpected(after_pointer.error());
+            }
+            resume = *after_pointer;
+        }
+        is.seekg(target);
+        return {};
+    }
+
     struct WireName {
         std::string prefix;
         std::string suffix;
@@ -194,73 +266,36 @@ namespace {
 
     std::expected<WireName, std::error_code>
     walk_name(fip::context& ctx, std::istream& is, const jump_table_t& jump_table) {
-        std::ostringstream hostname;
-        auto os_iter = std::ostreambuf_iterator(hostname);
-        auto view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
+        std::string prefix;
         std::optional<uint16_t> resume;
-
-        do {
-            const auto label_pos = wire_offset(is);
-            if (!label_pos) {
-                return std::unexpected(label_pos.error());
+        // Each label is followed by '.', so the prefix is one shy of the
+        // wire length: the terminating zero octet must still fit.
+        while (prefix.size() < max_name_octets) {
+            const auto length = read_length_octet(is);
+            if (!length) {
+                return std::unexpected(length.error());
             }
-            uint8_t label_size = 0;
-            if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &label_size);
-                copy_result.out == &label_size)
-            {
-                return std::unexpected(handle_eof(is));
+            if (0 == length->value) {
+                return WireName{std::move(prefix), {}, resume};
             }
-
-            // If label size is zero, we're done.
-            if (0 == label_size) {
-                return WireName{hostname.str(), {}, resume};
-            }
-
-            const bool is_compressed = (label_size & compression_pointer_flag) == compression_pointer_flag;
-            if (is_compressed) {
-                uint8_t next;
-                if (auto copy_result = std::ranges::copy(std::views::take(view, 1), &next);
-                    copy_result.out == &next) {
-                    return std::unexpected(handle_eof(is));
+            if (!is_pointer(length->value)) {
+                if (auto label = read_label(is, length->value, prefix); !label) {
+                    return std::unexpected(label.error());
                 }
-
-                auto jump = static_cast<uint16_t>((label_size & compression_offset_high_mask) << compression_offset_high_shift) | next;
-                if (auto it = jump_table.find(jump); it != jump_table.end()) {
-                    return WireName{hostname.str(), it->second, resume};
-                }
-
-                // A pointer may only reference a prior occurrence, so each jump
-                // moves strictly backward and a chain of them must terminate.
-                if (jump >= *label_pos) {
-                    ctx.log.debug("Compression pointer at {} jumps forward to {}", *label_pos, jump);
-                    return std::unexpected(make_error_code(DNSError::DNSHostToHostBadCompressionPointer));
-                }
-                if (!resume) {
-                    const auto after_pointer = wire_offset(is);
-                    if (!after_pointer) {
-                        return std::unexpected(after_pointer.error());
-                    }
-                    resume = *after_pointer;
-                }
-                is.seekg(jump);
-                view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
                 continue;
             }
-
-            if (max_label_octets < label_size) {
-                return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostLabelSize));
+            const auto target = read_pointer_target(is, length->value);
+            if (!target) {
+                return std::unexpected(target.error());
             }
-
-            std::ranges::copy(std::views::take(view, label_size), os_iter);
-            if (view.empty()) {
-                return std::unexpected(handle_eof(is));
+            if (auto it = jump_table.find(*target); it != jump_table.end()) {
+                return WireName{std::move(prefix), it->second, resume};
             }
-            *os_iter = '.';
-
-            // Each label is followed by '.', so the stream is one shy of the
-            // wire length: the terminating zero octet must still fit.
-        } while (hostname.view().size() < max_name_octets);
-        ctx.log.debug("Excessive hostname size {} > {}: '{}'", hostname.view().size() + 1, max_name_octets, hostname.view());
+            if (auto followed = follow_pointer(ctx, is, length->offset, *target, resume); !followed) {
+                return std::unexpected(followed.error());
+            }
+        }
+        ctx.log.debug("Excessive hostname size {} > {}: '{}'", prefix.size() + 1, max_name_octets, prefix);
         return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
     }
 
