@@ -208,14 +208,14 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
                            ctx.log.debug("Got an A answer over {}", magic_enum::enum_name(transport));
                            return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
                        }
-                       return asio::ip::address_v4(a.ipv4_address.s_addr).to_string();
+                       return asio::ip::address_v4(a.ipv4_address).to_string();
                    },
                    [&](const RData_AAAA& aaaa) -> answer_t {
                        if (transport != fip::AddressFamily::V6) {
                            ctx.log.debug("Got an AAAA answer over {}", magic_enum::enum_name(transport));
                            return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
                        }
-                       return asio::ip::address_v6(std::to_array(aaaa.ipv6_address.s6_addr)).to_string();
+                       return asio::ip::address_v6(aaaa.ipv6_address).to_string();
                    },
                    [&](const RData_TXT& txt) -> answer_t {
                        // Some providers tag the address, as in akahelp's "ns" "<ip>".

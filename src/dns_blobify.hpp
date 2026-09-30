@@ -38,13 +38,6 @@ constexpr auto properties(blob::tag<DNSResourceRecordBlob>) {
     return props;
 }
 
-constexpr auto properties(blob::tag<in_addr>) {
-    blob::properties_t<in_addr> props {};
-
-    props.member<&in_addr::s_addr>().endianness = std::endian::big;
-    return props;
-}
-
 constexpr auto properties(blob::tag<DNSOptionBlob>) {
     blob::properties_t<DNSOptionBlob> props {};
     props.expected_size = option_header_octets;

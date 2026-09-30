@@ -6,8 +6,6 @@
 #include <iterator>
 #include <spanstream>
 
-#include <arpa/inet.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
 #include <blobify/blobify.hpp>
@@ -61,6 +59,17 @@ namespace {
     store_bytes(std::ranges::input_range auto&& bytes, std::ostream& os) {
         if (std::ranges::copy(bytes, std::ostreambuf_iterator(os)).out.failed() || os.fail()) {
             return std::unexpected(make_error_code(DNSError::SerializeStreamFailure));
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, std::error_code>
+    load_bytes(std::ranges::sized_range auto& bytes, std::istream& is) {
+        auto stream = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>())
+                    | std::views::take(std::ranges::size(bytes));
+        const auto copied = std::ranges::copy(stream, std::ranges::begin(bytes));
+        if (copied.out != std::ranges::end(bytes)) {
+            return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
         }
         return {};
     }
@@ -290,15 +299,14 @@ DNSResourceRecord::serialize(fip::context& ctx, std::ostream& os) const noexcept
                 if (auto res = store_header(); !res) {
                     return std::unexpected(res.error());
                 }
-                blob::store(storage, a, blob::tag<fetchip_construction_policy>());
-                return {};
+                return store_bytes(a.ipv4_address, os);
             }
             case DNSQueryType::AAAA: {
                 const auto& aaaa = std::get<RData_AAAA>(rdata);
                 if (auto res = store_header(); !res) {
                     return std::unexpected(res.error());
                 }
-                return store_bytes(aaaa.ipv6_address.s6_addr, os);
+                return store_bytes(aaaa.ipv6_address, os);
             }
             case DNSQueryType::TXT: {
                 const auto& txt = std::get<RData_TXT>(rdata);
@@ -355,27 +363,31 @@ DNSResourceRecord::deserialize(fip::context& ctx, std::istream& is, jump_table_t
 
         ctx.log.debug("Got blob type '{}'", enum_name_or_value(res.blob.type));
 
+        RData_A a {};
         RData_AAAA aaaa {};
-        RData_TXT txt;
+        RData_TXT txt {};
         std::string txt_rdata;
         std::expected<RData_OPT, std::error_code> opt;
         switch (res.blob.type) {
             case DNSQueryType::A:
-                if (res.blob.rdlength != sizeof(in_addr)) {
+                if (res.blob.rdlength != a.ipv4_address.size()) {
                     ctx.log.debug("A record with rdlength {}", res.blob.rdlength);
                     return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
                 }
-                res.rdata = blob::load<RData_A>(loader, blob::tag<fetchip_construction_policy>());
+                if (auto loaded = load_bytes(a.ipv4_address, is); !loaded) {
+                    ctx.log.debug("Premature EOF deserializing A record");
+                    return std::unexpected(loaded.error());
+                }
+                res.rdata = a;
                 break;
             case DNSQueryType::AAAA:
-                if (res.blob.rdlength != sizeof(aaaa.ipv6_address.s6_addr)) {
+                if (res.blob.rdlength != aaaa.ipv6_address.size()) {
                     ctx.log.debug("AAAA record with rdlength {}", res.blob.rdlength);
                     return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
                 }
-                if (auto copied = std::ranges::copy(std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>()) | std::views::take(sizeof(aaaa.ipv6_address.s6_addr)), aaaa.ipv6_address.s6_addr);
-                    copied.out != std::end(aaaa.ipv6_address.s6_addr)) {
+                if (auto loaded = load_bytes(aaaa.ipv6_address, is); !loaded) {
                     ctx.log.debug("Premature EOF deserializing AAAA record");
-                    return std::unexpected(make_error_code(DNSError::DeserializePrematureEOF));
+                    return std::unexpected(loaded.error());
                 }
                 res.rdata = aaaa;
                 break;

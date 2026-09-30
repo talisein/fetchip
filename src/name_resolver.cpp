@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <memory>
 #include <ranges>
@@ -165,14 +166,14 @@ fip::address_families fip::configured_address_families()
             continue;
         }
         if (i->ifa_addr->sa_family == AF_INET) {
-            const auto a = asio::ip::address_v4 {ntohl(reinterpret_cast<const sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr)};
+            const auto& sin = *reinterpret_cast<const sockaddr_in*>(i->ifa_addr);
+            const auto a = asio::ip::address_v4 {std::bit_cast<asio::ip::address_v4::bytes_type>(sin.sin_addr)};
             if (!a.is_loopback() && v4_link_local.find(a) == v4_link_local.end()) {
                 families.v4 = true;
             }
         } else if (i->ifa_addr->sa_family == AF_INET6) {
-            asio::ip::address_v6::bytes_type bytes;
-            std::ranges::copy(reinterpret_cast<const sockaddr_in6*>(i->ifa_addr)->sin6_addr.s6_addr, bytes.begin());
-            const auto a = asio::ip::address_v6 {bytes};
+            const auto& sin6 = *reinterpret_cast<const sockaddr_in6*>(i->ifa_addr);
+            const auto a = asio::ip::address_v6 {std::bit_cast<asio::ip::address_v6::bytes_type>(sin6.sin6_addr)};
             if (!a.is_loopback() && !a.is_link_local()) {
                 families.v6 = true;
             }

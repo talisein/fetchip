@@ -55,7 +55,7 @@ struct std::formatter<RData_A> {
     }
     template <typename FormatContext>
     auto format(RData_A p, FormatContext& ctx) const {
-        return format_to(ctx.out(), "RData_A {{ ipv4_address: {} }}"sv, asio::ip::address_v4(p.ipv4_address.s_addr).to_string());
+        return format_to(ctx.out(), "RData_A {{ ipv4_address: {} }}"sv, asio::ip::address_v4(p.ipv4_address).to_string());
     }
 };
 
@@ -66,7 +66,7 @@ struct std::formatter<RData_AAAA> {
     }
     template <typename FormatContext>
     auto format(const RData_AAAA& p, FormatContext& ctx) const {
-        return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: {} }}"sv, asio::ip::address_v6(std::to_array(p.ipv6_address.s6_addr)).to_string());
+        return format_to(ctx.out(), "RData_AAAA {{ ipv6_address: {} }}"sv, asio::ip::address_v6(p.ipv6_address).to_string());
     }
 };
 

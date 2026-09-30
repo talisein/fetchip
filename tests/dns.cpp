@@ -483,10 +483,10 @@ int main() {
         DNSHeader header { 0xee, DNSHeaderFlags::RecursionDesired, 1, 0, 0, 0 };
         expect(eq("DNSHeader { ID: 0xEE, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 0, Authorities: 0, Additionals: 0 }"sv, std::format("{}", header)));
 
-        RData_A a { in_addr { asio::ip::make_address_v4("39.139.239.39").to_uint() } };
+        // The octets are spelled out in wire order, not parsed by the library that formats them.
+        RData_A a { {39, 139, 239, 39} };
         expect(eq("RData_A { ipv4_address: 39.139.239.39 }"sv, std::format("{}", a)));
-        RData_AAAA aaaa {};
-        inet_pton(AF_INET6, "fe80::aad8:4d9f:1628:34b1", &aaaa.ipv6_address);
+        RData_AAAA aaaa { {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xd8, 0x4d, 0x9f, 0x16, 0x28, 0x34, 0xb1} };
         expect(eq("RData_AAAA { ipv6_address: fe80::aad8:4d9f:1628:34b1 }"sv, std::format("{}", aaaa)));
     };
 
@@ -497,14 +497,16 @@ int main() {
         std::ranges::fill(buf, 0x39);
         DNSMessage message {ctx};
         message.add_question("miku.cute", DNSQueryType::A);
-        DNSResourceRecord answer = { "miku.cute", { DNSQueryType::A, DNSQueryClass::IN, 60, sizeof(RData_A) }, RData_A { in_addr {0x27272727} } };
+        DNSResourceRecord answer = { "miku.cute", { DNSQueryType::A, DNSQueryClass::IN, 60, 4 }, RData_A { {39, 139, 239, 39} } };
         message.add_answer(answer);
 
         auto serialized = message.serialize(ss);
         expect(serialized.has_value());
+        // The address reaches the wire in the order it prints.
+        expect(std::string_view(ss.span()).ends_with("\47\213\357\47"sv));
         auto deserialized = DNSMessage::deserialize(ctx, ss);
         expect(deserialized.has_value());
-        expect(eq("DNSMessage { DNSHeader { ID: 0x3596, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 0 }, DNSQuestion { Name: miku.cute, Type: A, Class: IN }, DNSResourceRecord { Name: miku.cute, Type: A, Class: IN, TTL: 60, RDataLength: 4, RData_A { ipv4_address: 39.39.39.39 } } }"sv, std::format("{}", deserialized.value())));
+        expect(eq("DNSMessage { DNSHeader { ID: 0x3596, DNSHeaderFlags { QR: Query, Flags: RecursionDesired, OpCode: STANDARD_QUERY, ResponseCode: NO_ERROR }, Questions: 1, Answers: 1, Authorities: 0, Additionals: 0 }, DNSQuestion { Name: miku.cute, Type: A, Class: IN }, DNSResourceRecord { Name: miku.cute, Type: A, Class: IN, TTL: 60, RDataLength: 4, RData_A { ipv4_address: 39.139.239.39 } } }"sv, std::format("{}", deserialized.value())));
     };
 
     static constexpr auto dig_write = "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374/\340\7]"sv;
@@ -715,6 +717,7 @@ int main() {
             expect(eq(serialized.error(), DNSError::SerializeStreamFailure)) << enum_name_or_value(record.blob.type);
         }
     } | std::vector<DNSResourceRecord> {
+        {"miku.cute", { DNSQueryType::A, DNSQueryClass::IN, 60, 4 }, RData_A {}},
         {"miku.cute", { DNSQueryType::AAAA, DNSQueryClass::IN, 60, 16 }, RData_AAAA {}},
         {"miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 14 }, RData_TXT { {"198.51.100.39"} }},
         {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 20 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 16 }, std::vector<uint8_t>(16) } } }},
@@ -830,6 +833,8 @@ int main() {
         "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\13\0\n\0\10\31\304\336\374/\340u\35"sv,
         // OPT option header straddling an rdlength of 2.
         "\314\347\1\0\0\1\0\0\0\0\0\1\4myip\7opendns\3com\0\0\1\0\1\0\0)\4\320\0\0\0\0\0\2\0\n\0\10\31\304\336\374/\340u\35"sv,
+        // A record claiming 4 rdata bytes with only 3 left in the message.
+        "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\1\0\1\0\0\0\0\0\4HnP"sv,
         // RRSIG claiming 8 rdata bytes with only 3 left in the message.
         "\314\347\201\200\0\1\0\1\0\0\0\0\4myip\7opendns\3com\0\0\1\0\1\300\f\0\56\0\1\0\0\0\0\0\10abc"sv,
     };

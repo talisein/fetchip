@@ -7,12 +7,12 @@
 #include <map>
 #include <ranges>
 #include <string_view>
-#include <sys/socket.h>
 
 #include <magic_enum/magic_enum.hpp>
 #include <magic_enum/magic_enum_flags.hpp>
 #include "context.hpp"
 #include "error_category.hpp"
+#include "net.hpp"
 #include <blobify/blobify.hpp>
 
 using jump_table_t = std::map<uint16_t, std::string>;
@@ -179,12 +179,12 @@ struct DNSQuestion {
 
 // Struct for RDATA in DNSAnswer for A (IPv4 address) records
 struct RData_A {
-    in_addr ipv4_address;  // IPv4 address
+    asio::ip::address_v4::bytes_type ipv4_address;  // IPv4 address
 };
 
 // Struct for RDATA in DNSAnswer for AAAA (IPv6 address) records
 struct RData_AAAA {
-    in6_addr ipv6_address;  // IPv6 address
+    asio::ip::address_v6::bytes_type ipv6_address;  // IPv6 address
 };
 
 // Struct for RDATA in DNSAnswer for NS (Name Server) records
