@@ -180,11 +180,15 @@ struct DNSQuestion {
 // Struct for RDATA in DNSAnswer for A (IPv4 address) records
 struct RData_A {
     asio::ip::address_v4::bytes_type ipv4_address;  // IPv4 address
+
+    static std::expected<RData_A, std::error_code> deserialize(fip::context& ctx, std::istream &is, size_t rdlen);
 };
 
 // Struct for RDATA in DNSAnswer for AAAA (IPv6 address) records
 struct RData_AAAA {
     asio::ip::address_v6::bytes_type ipv6_address;  // IPv6 address
+
+    static std::expected<RData_AAAA, std::error_code> deserialize(fip::context& ctx, std::istream &is, size_t rdlen);
 };
 
 // Struct for RDATA in DNSAnswer for NS (Name Server) records
@@ -206,6 +210,8 @@ struct RData_MX {
 // Struct for RDATA in DNSAnswer for TXT (Text) records
 struct RData_TXT {
     std::vector<std::string> strings;  // Character-strings, in wire order
+
+    static std::expected<RData_TXT, std::error_code> deserialize(fip::context& ctx, std::istream &is, size_t rdlen);
 };
 
 // Struct for RDATA in DNSAnswer for SRV (Service location) records
