@@ -134,6 +134,17 @@ namespace {
         return {};
     }
 
+    // RFC 1035 §4.1.1: only the authority sets AA, so a reply without it came from something on the path answering in its place.
+    std::expected<void, std::error_code>
+    check_authority(fip::context& ctx, const DNSMessage& response, NameserverRole role)
+    {
+        if (role == NameserverRole::Authoritative && !(response.get_header().flags & Authoritative)) {
+            ctx.log.debug("Reply lacks the AA flag, so a server other than the authority answered");
+            return std::unexpected(make_error_code(DNSError::DNSResolverNotAuthoritative));
+        }
+        return {};
+    }
+
     std::expected<void, std::error_code>
     check_response_status(fip::context& ctx, const DNSMessage& response)
     {
@@ -217,7 +228,7 @@ namespace {
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
-DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport) {
+DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport, NameserverRole role) {
     const auto deadline = std::chrono::steady_clock::now() + fip::dns_resolution_timeout;
     std::array<char, receive_buffer_octets> buf;
     std::expected<std::string, std::error_code> result;
@@ -256,7 +267,7 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage&
             break;
         }
 
-        result = parse_dns_response(std::span(buf).first(bytes_received), query, transport);
+        result = parse_dns_response(std::span(buf).first(bytes_received), query, transport, role);
         if (result || result.error() != make_error_code(DNSError::DNSResolverMismatchedResponse)) {
             break;
         }
@@ -273,7 +284,7 @@ DNSResolver::receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage&
 }
 
 std::expected<std::string, std::error_code>
-DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport) {
+DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport, NameserverRole role) {
     std::ispanstream ss(response);
 
     auto message = DNSMessage::deserialize(ctx, ss);
@@ -285,6 +296,9 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
 
     if (auto matches = check_matches_query(ctx, *message, query); !matches) {
         return std::unexpected(matches.error());
+    }
+    if (auto authority = check_authority(ctx, *message, role); !authority) {
+        return std::unexpected(authority.error());
     }
     if (auto status = check_response_status(ctx, *message); !status) {
         return std::unexpected(status.error());
@@ -302,8 +316,8 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
-DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query) {
-    auto resolver_addrs = co_await resolve_host(ctx, resolver);
+DNSResolver::query_dns_public_ip(std::string_view host, const Nameserver& resolver, DNSQueryType query) {
+    auto resolver_addrs = co_await resolve_host(ctx, resolver.host);
     if (!resolver_addrs) {
         ctx.log.debug("Failed to resolve the resolver: {}", resolver_addrs.error().message());
         co_return std::unexpected(resolver_addrs.error());
@@ -334,7 +348,7 @@ DNSResolver::query_dns_public_ip(std::string_view host, std::string_view resolve
             continue;
         }
 
-        auto result = co_await receive_dns_response(*sock, *sent_query, transport);
+        auto result = co_await receive_dns_response(*sock, *sent_query, transport, resolver.role);
         if (result.has_value()) {
             ctx.log.debug("Fetched current ip {} from {}", *result, host);
             co_return result;

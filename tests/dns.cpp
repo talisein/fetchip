@@ -609,7 +609,7 @@ int main() {
         DNSResolver resolver {ctx};
         DNSMessage query {ctx};
         query.add_question(name, DNSQueryType::A);
-        auto parsed = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4);
+        auto parsed = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4, NameserverRole::Recursive);
         expect(parsed.has_value()) << name;
         if (parsed) {
             expect(eq(address, *parsed));
@@ -1031,7 +1031,7 @@ int main() {
         DNSResolver resolver {ctx};
         DNSMessage query {ctx};
         query.add_question("myip.opendns.com", DNSQueryType::A);
-        auto address = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4);
+        auto address = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4, NameserverRole::Recursive);
         expect(address.has_value());
         if (address) {
             expect(eq("72.110.80.89"sv, *address));
@@ -1073,13 +1073,13 @@ int main() {
         DNSMessage query {ctx};
         query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
 
-        auto address = resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V4);
+        auto address = resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
         expect(address.has_value());
         if (address) {
             expect(eq("198.51.100.39"sv, *address));
         }
-        expect(resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V6) == std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily)));
-        expect(resolver.parse_dns_response(with_id(untagged, query), query, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+        expect(resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V6, NameserverRole::Authoritative) == std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily)));
+        expect(resolver.parse_dns_response(with_id(untagged, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative) ==std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
     "parse answer after cname"_test = [] {
@@ -1090,12 +1090,12 @@ int main() {
         DNSMessage query {ctx};
         query.add_question("o-o.myaddr.l.google.com", DNSQueryType::TXT);
 
-        auto address = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4);
+        auto address = resolver.parse_dns_response(with_id(buf, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
         expect(address.has_value());
         if (address) {
             expect(eq("198.51.100.39"sv, *address));
         }
-        expect(resolver.parse_dns_response(with_id(cname_only, query), query, fip::AddressFamily::V4) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+        expect(resolver.parse_dns_response(with_id(cname_only, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative) ==std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
     "reject mismatched response"_test = [] {
@@ -1108,23 +1108,23 @@ int main() {
         DNSMessage query {ctx};
         query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
         const auto other_id = static_cast<uint16_t>(~query.get_header().id);
-        expect(resolver.parse_dns_response(with_id(response, other_id), query, fip::AddressFamily::V4) == mismatched);
+        expect(resolver.parse_dns_response(with_id(response, other_id), query, fip::AddressFamily::V4, NameserverRole::Authoritative) == mismatched);
 
         DNSMessage other_name {ctx};
         other_name.add_question("whoami.ds.akahelp.org", DNSQueryType::TXT);
-        expect(resolver.parse_dns_response(with_id(response, other_name), other_name, fip::AddressFamily::V4) == mismatched);
+        expect(resolver.parse_dns_response(with_id(response, other_name), other_name, fip::AddressFamily::V4, NameserverRole::Authoritative) == mismatched);
 
         DNSMessage other_type {ctx};
         other_type.add_question("whoami.ds.akahelp.net", DNSQueryType::A);
-        expect(resolver.parse_dns_response(with_id(response, other_type), other_type, fip::AddressFamily::V4) == mismatched);
+        expect(resolver.parse_dns_response(with_id(response, other_type), other_type, fip::AddressFamily::V4, NameserverRole::Authoritative) == mismatched);
 
         DNSMessage a_query {ctx};
         a_query.add_question("myip.opendns.com", DNSQueryType::A);
-        expect(resolver.parse_dns_response(with_id(not_a_response, a_query), a_query, fip::AddressFamily::V4) == mismatched);
+        expect(resolver.parse_dns_response(with_id(not_a_response, a_query), a_query, fip::AddressFamily::V4, NameserverRole::Recursive) == mismatched);
 
         DNSMessage other_case {ctx};
         other_case.add_question("WhoAmI.DS.akahelp.net", DNSQueryType::TXT);
-        auto address = resolver.parse_dns_response(with_id(response, other_case), other_case, fip::AddressFamily::V4);
+        auto address = resolver.parse_dns_response(with_id(response, other_case), other_case, fip::AddressFamily::V4, NameserverRole::Authoritative);
         expect(address.has_value());
         if (address) {
             expect(eq("198.51.100.39"sv, *address));
@@ -1139,12 +1139,43 @@ int main() {
         DNSMessage query {ctx};
         query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
 
-        const auto ours = resolver.parse_dns_response(with_id(truncated, query), query, fip::AddressFamily::V4);
+        const auto ours = resolver.parse_dns_response(with_id(truncated, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
         expect(ours == std::unexpected(make_error_code(DNSError::DNSResolverTruncatedResponse)));
 
         // A wrong ID is reported before TC, so the receive loop still skips spoofed replies.
         const auto other_id = static_cast<uint16_t>(~query.get_header().id);
-        const auto not_ours = resolver.parse_dns_response(with_id(truncated, other_id), query, fip::AddressFamily::V4);
+        const auto not_ours = resolver.parse_dns_response(with_id(truncated, other_id), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
+        expect(not_ours == std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse)));
+    };
+
+    "reject non-authoritative response"_test = [] {
+        // The "reject mismatched response" capture with AA cleared: flags octet \204 becomes \200.
+        constexpr auto authoritative = "\314\347\204\0\0\1\0\1\0\0\0\0\6whoami\2ds\7akahelp\3net\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\21\2ns\015198.51.100.39"sv;
+        constexpr auto not_authoritative = "\314\347\200\0\0\1\0\1\0\0\0\0\6whoami\2ds\7akahelp\3net\0\0\20\0\1\300\14\0\20\0\1\0\0\0<\0\21\2ns\015198.51.100.39"sv;
+        fip::context ctx(39, true);
+        DNSResolver resolver {ctx};
+        DNSMessage query {ctx};
+        query.add_question("whoami.ds.akahelp.net", DNSQueryType::TXT);
+
+        const auto refused = resolver.parse_dns_response(with_id(not_authoritative, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
+        expect(refused == std::unexpected(make_error_code(DNSError::DNSResolverNotAuthoritative)));
+
+        // Only a service that asks the authority expects AA; a public resolver never sets it.
+        const auto from_resolver = resolver.parse_dns_response(with_id(not_authoritative, query), query, fip::AddressFamily::V4, NameserverRole::Recursive);
+        expect(from_resolver.has_value());
+        if (from_resolver) {
+            expect(eq("198.51.100.39"sv, *from_resolver));
+        }
+
+        const auto from_authority = resolver.parse_dns_response(with_id(authoritative, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
+        expect(from_authority.has_value());
+        if (from_authority) {
+            expect(eq("198.51.100.39"sv, *from_authority));
+        }
+
+        // A wrong ID is reported before AA, so the receive loop still skips spoofed replies.
+        const auto other_id = static_cast<uint16_t>(~query.get_header().id);
+        const auto not_ours = resolver.parse_dns_response(with_id(not_authoritative, other_id), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
         expect(not_ours == std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse)));
     };
 

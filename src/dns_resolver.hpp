@@ -6,6 +6,7 @@
 
 #include "context.hpp"
 #include "dns.hpp"
+#include "services.hpp"
 
 // The family of a textual IP address, or nullopt if it is not one.
 std::optional<fip::AddressFamily> address_family_of(std::string_view text);
@@ -19,10 +20,10 @@ public:
     DNSResolver(fip::context &ctx) : ctx(ctx) { };
 
     asio::awaitable<std::expected<std::string, std::error_code>>
-    query_dns_public_ip(std::string_view host, std::string_view resolver, DNSQueryType query);
+    query_dns_public_ip(std::string_view host, const Nameserver& resolver, DNSQueryType query);
 
     std::expected<std::string, std::error_code>
-    parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport);
+    parse_dns_response(std::span<const char> response, const DNSMessage& query, fip::AddressFamily transport, NameserverRole role);
 
 private:
     std::expected<asio::ip::udp::socket, std::error_code>
@@ -32,7 +33,7 @@ private:
     send_dns_query(asio::ip::udp::socket& sock, std::string_view host, DNSQueryType query_type);
 
     asio::awaitable<std::expected<std::string, std::error_code>>
-    receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport);
+    receive_dns_response(asio::ip::udp::socket& sock, const DNSMessage& query, fip::AddressFamily transport, NameserverRole role);
 
     fip::context& ctx;
 

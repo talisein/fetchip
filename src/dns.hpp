@@ -329,6 +329,7 @@ enum class DNSError
     DNSResolverMismatchedResponse,
     DNSResolverOversizedResponse,
     DNSResolverTruncatedResponse,
+    DNSResolverNotAuthoritative,
 };
 
 namespace std

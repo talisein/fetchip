@@ -35,12 +35,23 @@ constexpr std::optional<DNSQueryType> dns_query_type(ServiceType type)
     return std::nullopt;
 }
 
+// Whether the server a DNS service asks is the authority for its name, or a public resolver answering it.
+enum class NameserverRole {
+    Authoritative,
+    Recursive,
+};
+
+struct Nameserver {
+    std::string_view host;
+    NameserverRole role;
+};
+
 struct Service {
     // Shared by the HTTP and HTTPS entries for one provider, which -i picks between, and by the DNS_A and DNS_AAAA entries, which -4 or -6 picks between.
     std::string_view name;
     std::string_view address;
     std::optional<std::string_view> path;
-    std::optional<std::string_view> resolver;
+    std::optional<Nameserver> resolver;
     ServiceType type;
 };
 
@@ -63,13 +74,13 @@ inline constexpr auto services = std::to_array<Service>({
         {"ipinfo",      "https://ipinfo.io",             "/ip",        std::nullopt,            ServiceType::HTTPS},
         {"ipify",       "http://api64.ipify.org",        "/",          std::nullopt,            ServiceType::HTTP},
         {"ipify",       "https://api64.ipify.org",       "/",          std::nullopt,            ServiceType::HTTPS},
-        {"opendns",     "myip.opendns.com",              std::nullopt, "resolver1.opendns.com", ServiceType::DNS_A},
-        {"opendns",     "myip.opendns.com",              std::nullopt, "resolver1.opendns.com", ServiceType::DNS_AAAA},
-        {"akamai-dns",  "whoami.akamai.net",             std::nullopt, "ns1-1.akamaitech.net",  ServiceType::DNS_A},
-        {"google",      "o-o.myaddr.l.google.com",       std::nullopt, "ns1.google.com",        ServiceType::DNS_TXT},
-        {"quad9",       "whatismyip.on.quad9.net",       std::nullopt, "dns.quad9.net",         ServiceType::DNS_A},
-        {"quad9",       "whatismyip.on.quad9.net",       std::nullopt, "dns.quad9.net",         ServiceType::DNS_AAAA},
-        {"akahelp",     "whoami.ds.akahelp.net",         std::nullopt, "a20-65.akam.net",       ServiceType::DNS_TXT},
+        {"opendns",     "myip.opendns.com",              std::nullopt, Nameserver {"resolver1.opendns.com", NameserverRole::Recursive},     ServiceType::DNS_A},
+        {"opendns",     "myip.opendns.com",              std::nullopt, Nameserver {"resolver1.opendns.com", NameserverRole::Recursive},     ServiceType::DNS_AAAA},
+        {"akamai-dns",  "whoami.akamai.net",             std::nullopt, Nameserver {"ns1-1.akamaitech.net",  NameserverRole::Authoritative}, ServiceType::DNS_A},
+        {"google",      "o-o.myaddr.l.google.com",       std::nullopt, Nameserver {"ns1.google.com",        NameserverRole::Authoritative}, ServiceType::DNS_TXT},
+        {"quad9",       "whatismyip.on.quad9.net",       std::nullopt, Nameserver {"dns.quad9.net",         NameserverRole::Recursive},     ServiceType::DNS_A},
+        {"quad9",       "whatismyip.on.quad9.net",       std::nullopt, Nameserver {"dns.quad9.net",         NameserverRole::Recursive},     ServiceType::DNS_AAAA},
+        {"akahelp",     "whoami.ds.akahelp.net",         std::nullopt, Nameserver {"a20-65.akam.net",       NameserverRole::Authoritative}, ServiceType::DNS_TXT},
 });
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (s.type == ServiceType::HTTP || s.type == ServiceType::HTTPS) return s.path.has_value(); else return true; }) );
 static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns_query_type(s.type)) return s.resolver.has_value(); else return true; }) );

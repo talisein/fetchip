@@ -100,6 +100,26 @@ int main() {
         expect(unique_names == in_table);
     };
 
+    // Measured with dig: the authorities set AA on every direct reply, the public resolvers never do.
+    "each DNS service names its nameserver's role"_test = [] {
+        const auto roles = std::vector<std::pair<std::string_view, NameserverRole>> {
+            {"opendns", NameserverRole::Recursive},
+            {"quad9", NameserverRole::Recursive},
+            {"akamai-dns", NameserverRole::Authoritative},
+            {"google", NameserverRole::Authoritative},
+            {"akahelp", NameserverRole::Authoritative},
+        };
+        for (const auto& service : services) {
+            if (!dns_query_type(service.type)) {
+                continue;
+            }
+            const auto role = std::ranges::find(roles, service.name, &std::pair<std::string_view, NameserverRole>::first);
+            expect(fatal(role != roles.end())) << service.name;
+            expect(fatal(service.resolver.has_value())) << service.name;
+            expect(service.resolver->role == role->second) << service.name;
+        }
+    };
+
     "service type names start with DNS"_test = [] {
         const auto names = service_type_names();
         expect(fatal(!names.empty()));

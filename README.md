@@ -43,7 +43,7 @@ fetchip [-4 | -6] [-s TYPE] [-n NAME] [-i] [-v]
 | akamai-dns | DNS_A |
 | google, akahelp | DNS_TXT |
 
-DNS services are queried directly at the provider's authoritative server, not through the system resolver. Only the server's own address is looked up through systemd-resolved.
+DNS services are queried directly at the provider's own server, not through the system resolver. Only the server's own address is looked up through systemd-resolved. akamai-dns, google and akahelp ask the authoritative server for their name, so a reply without the authoritative-answer flag is refused: it means something on the path, such as a router that redirects port 53, answered in the server's place and reported its own address. opendns and quad9 are public resolvers, which never set that flag.
 
 ## Logging
 

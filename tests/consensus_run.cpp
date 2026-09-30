@@ -55,7 +55,7 @@ constexpr Service https(std::string_view address)
 
 constexpr Service dns(std::string_view address, ServiceType type)
 {
-    return {address, address, std::nullopt, "resolver.example", type};
+    return {address, address, std::nullopt, Nameserver {"resolver.example", NameserverRole::Authoritative}, type};
 }
 
 struct outcome {
