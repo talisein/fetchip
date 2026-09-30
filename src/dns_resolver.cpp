@@ -1,3 +1,4 @@
+#include <functional>
 #include <ranges>
 #include <span>
 #include <spanstream>
@@ -114,6 +115,105 @@ namespace {
     {
         return a.blob.qtype == b.blob.qtype && a.blob.qclass == b.blob.qclass && same_name(a.qname, b.qname);
     }
+
+    std::expected<void, std::error_code>
+    check_matches_query(fip::context& ctx, const DNSMessage& response, const DNSMessage& query)
+    {
+        if (response.get_header().id != query.get_header().id) {
+            ctx.log.debug("Response ID {:#x} does not match query ID {:#x}", response.get_header().id, query.get_header().id);
+            return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+        }
+        if (!(response.get_header().flags & QueryResponse)) {
+            ctx.log.debug("Message is not a response");
+            return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+        }
+        if (!std::ranges::equal(response.get_questions(), query.get_questions(), same_question)) {
+            ctx.log.debug("Response question does not match the query");
+            return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+        }
+        return {};
+    }
+
+    std::expected<void, std::error_code>
+    check_response_status(fip::context& ctx, const DNSMessage& response)
+    {
+        if (response.get_header().get_response_code() != DNSResponseCodes::NO_ERROR) {
+            ctx.log.debug("Bailing due to error response code");
+            return std::unexpected(make_error_code(DNSError::DNSResolverErrorResponse));
+        }
+        // RFC 1035 §4.1.1, RFC 2181 §9: TC marks the reply incomplete, and there is no TCP retry.
+        if (response.get_header().flags & Truncated) {
+            ctx.log.debug("Bailing due to a truncated response");
+            return std::unexpected(make_error_code(DNSError::DNSResolverTruncatedResponse));
+        }
+        return {};
+    }
+
+    std::expected<std::reference_wrapper<const DNSResourceRecord>, std::error_code>
+    first_address_record(fip::context& ctx, std::span<const DNSResourceRecord> answers)
+    {
+        if (answers.size() == 0) {
+            ctx.log.debug("Bailing due to zero answers");
+            return std::unexpected(make_error_code(DNSError::DNSResolverNoAnswers));
+        }
+        // Other record types, such as a CNAME ahead of the answer, carry no address and their rdata is left unparsed.
+        auto answer = std::ranges::find_if(answers, [](const auto& rr) {
+            return rr.blob.type == DNSQueryType::A || rr.blob.type == DNSQueryType::AAAA || rr.blob.type == DNSQueryType::TXT;
+        });
+        if (answer == answers.end()) {
+            ctx.log.debug("Bailing because no answer is an A, AAAA or TXT record");
+            return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
+        }
+        return std::cref(*answer);
+    }
+
+    std::expected<std::string, std::error_code>
+    address_from_txt(fip::context& ctx, const RData_TXT& txt, fip::AddressFamily transport)
+    {
+        // Some providers tag the address, as in akahelp's "ns" "<ip>".
+        const auto text = std::ranges::find_if(txt.strings, [](const auto& s) { return address_family_of(s).has_value(); });
+        if (text == txt.strings.end()) {
+            ctx.log.debug("TXT answer holds no IP address: {}", txt.strings);
+            return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
+        }
+        const auto family = *address_family_of(*text);
+        ctx.log.debug("TXT answer {} is {}", *text, magic_enum::enum_name(family));
+        if (family != transport) {
+            ctx.log.debug("TXT answer family does not match transport {}", magic_enum::enum_name(transport));
+            return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
+        }
+        return *text;
+    }
+
+    std::expected<std::string, std::error_code>
+    address_from_rdata(fip::context& ctx, const DNSResourceRecord::RDataVariant_t& rdata, fip::AddressFamily transport)
+    {
+        using answer_t = std::expected<std::string, std::error_code>;
+        return std::visit(overloads
+                   {
+                       [&](const RData_A& a) -> answer_t {
+                           if (transport != fip::AddressFamily::V4) {
+                               ctx.log.debug("Got an A answer over {}", magic_enum::enum_name(transport));
+                               return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
+                           }
+                           return asio::ip::address_v4(a.ipv4_address).to_string();
+                       },
+                       [&](const RData_AAAA& aaaa) -> answer_t {
+                           if (transport != fip::AddressFamily::V6) {
+                               ctx.log.debug("Got an AAAA answer over {}", magic_enum::enum_name(transport));
+                               return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
+                           }
+                           return asio::ip::address_v6(aaaa.ipv6_address).to_string();
+                       },
+                       [&](const RData_TXT& txt) -> answer_t {
+                           return address_from_txt(ctx, txt, transport);
+                       },
+                       [&](const auto& unknown) -> answer_t {
+                           ctx.log.debug("Unknown RData in variant?! {}", typeid(unknown).name());
+                           return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
+                       }
+                   }, rdata);
+    }
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
@@ -183,80 +283,18 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
     }
     ctx.log.debug("{}", *message);
 
-    if (message->get_header().id != query.get_header().id) {
-        ctx.log.debug("Response ID {:#x} does not match query ID {:#x}", message->get_header().id, query.get_header().id);
-        return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+    if (auto matches = check_matches_query(ctx, *message, query); !matches) {
+        return std::unexpected(matches.error());
     }
-    if (!(message->get_header().flags & QueryResponse)) {
-        ctx.log.debug("Message is not a response");
-        return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+    if (auto status = check_response_status(ctx, *message); !status) {
+        return std::unexpected(status.error());
     }
-    if (!std::ranges::equal(message->get_questions(), query.get_questions(), same_question)) {
-        ctx.log.debug("Response question does not match the query");
-        return std::unexpected(make_error_code(DNSError::DNSResolverMismatchedResponse));
+    auto answer = first_address_record(ctx, message->get_answers());
+    if (!answer) {
+        return std::unexpected(answer.error());
     }
 
-    if (message->get_header().get_response_code() != DNSResponseCodes::NO_ERROR) {
-        ctx.log.debug("Bailing due to error response code");
-        return std::unexpected(make_error_code(DNSError::DNSResolverErrorResponse));
-    }
-    // RFC 1035 §4.1.1, RFC 2181 §9: TC marks the reply incomplete, and there is no TCP retry.
-    if (message->get_header().flags & Truncated) {
-        ctx.log.debug("Bailing due to a truncated response");
-        return std::unexpected(make_error_code(DNSError::DNSResolverTruncatedResponse));
-    }
-
-    auto answers = message->get_answers();
-    if (answers.size() == 0) {
-        ctx.log.debug("Bailing due to zero answers");
-        return std::unexpected(make_error_code(DNSError::DNSResolverNoAnswers));
-    }
-    // Other record types, such as a CNAME ahead of the answer, carry no address and their rdata is left unparsed.
-    auto answer = std::ranges::find_if(answers, [](const auto& rr) {
-        return rr.blob.type == DNSQueryType::A || rr.blob.type == DNSQueryType::AAAA || rr.blob.type == DNSQueryType::TXT;
-    });
-    if (answer == answers.end()) {
-        ctx.log.debug("Bailing because no answer is an A, AAAA or TXT record");
-        return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
-    }
-
-    using answer_t = std::expected<std::string, std::error_code>;
-    auto address = std::visit(overloads
-               {
-                   [&](const RData_A& a) -> answer_t {
-                       if (transport != fip::AddressFamily::V4) {
-                           ctx.log.debug("Got an A answer over {}", magic_enum::enum_name(transport));
-                           return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
-                       }
-                       return asio::ip::address_v4(a.ipv4_address).to_string();
-                   },
-                   [&](const RData_AAAA& aaaa) -> answer_t {
-                       if (transport != fip::AddressFamily::V6) {
-                           ctx.log.debug("Got an AAAA answer over {}", magic_enum::enum_name(transport));
-                           return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
-                       }
-                       return asio::ip::address_v6(aaaa.ipv6_address).to_string();
-                   },
-                   [&](const RData_TXT& txt) -> answer_t {
-                       // Some providers tag the address, as in akahelp's "ns" "<ip>".
-                       const auto text = std::ranges::find_if(txt.strings, [](const auto& s) { return address_family_of(s).has_value(); });
-                       if (text == txt.strings.end()) {
-                           ctx.log.debug("TXT answer holds no IP address: {}", txt.strings);
-                           return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
-                       }
-                       const auto family = *address_family_of(*text);
-                       ctx.log.debug("TXT answer {} is {}", *text, magic_enum::enum_name(family));
-                       if (family != transport) {
-                           ctx.log.debug("TXT answer family does not match transport {}", magic_enum::enum_name(transport));
-                           return std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily));
-                       }
-                       return *text;
-                   },
-                   [&](const auto& unknown) -> answer_t {
-                       ctx.log.debug("Unknown RData in variant?! {}", typeid(unknown).name());
-                       return std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer));
-                   }
-               }, answer->rdata);
+    auto address = address_from_rdata(ctx, answer->get().rdata, transport);
     if (address) {
         ctx.log.debug("Got response IP: {}", *address);
     }
