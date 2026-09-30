@@ -1079,7 +1079,7 @@ int main() {
             expect(eq("198.51.100.39"sv, *address));
         }
         expect(resolver.parse_dns_response(with_id(tagged, query), query, fip::AddressFamily::V6, NameserverRole::Authoritative) == std::unexpected(make_error_code(DNSError::DNSResolverWrongFamily)));
-        expect(resolver.parse_dns_response(with_id(untagged, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative) ==std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+        expect(resolver.parse_dns_response(with_id(untagged, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
     "parse answer after cname"_test = [] {
@@ -1095,7 +1095,7 @@ int main() {
         if (address) {
             expect(eq("198.51.100.39"sv, *address));
         }
-        expect(resolver.parse_dns_response(with_id(cname_only, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative) ==std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
+        expect(resolver.parse_dns_response(with_id(cname_only, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative) == std::unexpected(make_error_code(DNSError::DNSResolverUnexpectedAnswer)));
     };
 
     "reject mismatched response"_test = [] {
@@ -1172,6 +1172,11 @@ int main() {
         if (from_authority) {
             expect(eq("198.51.100.39"sv, *from_authority));
         }
+
+        // An authority leaves AA clear on an error reply, so the RCODE is reported rather than the missing flag.
+        constexpr auto refused_without_aa = "\314\347\200\5\0\1\0\0\0\0\0\0\6whoami\2ds\7akahelp\3net\0\0\20\0\1"sv;
+        const auto error_reply = resolver.parse_dns_response(with_id(refused_without_aa, query), query, fip::AddressFamily::V4, NameserverRole::Authoritative);
+        expect(error_reply == std::unexpected(make_error_code(DNSError::DNSResolverErrorResponse)));
 
         // A wrong ID is reported before AA, so the receive loop still skips spoofed replies.
         const auto other_id = static_cast<uint16_t>(~query.get_header().id);

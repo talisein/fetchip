@@ -6,7 +6,6 @@
 
 #include "context.hpp"
 #include "dns.hpp"
-#include "services.hpp"
 
 // The family of a textual IP address, or nullopt if it is not one.
 std::optional<fip::AddressFamily> address_family_of(std::string_view text);

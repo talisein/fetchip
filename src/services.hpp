@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "address_family.hpp"
-#include "consensus.hpp"
 #include "dns.hpp"
+#include "trust.hpp"
 
 enum class ServiceType {
     HTTP,
@@ -35,17 +35,6 @@ constexpr std::optional<DNSQueryType> dns_query_type(ServiceType type)
     }
     return std::nullopt;
 }
-
-// Whether the server a DNS service asks is the authority for its name, or a public resolver answering it.
-enum class NameserverRole {
-    Authoritative,
-    Recursive,
-};
-
-struct Nameserver {
-    std::string_view host;
-    NameserverRole role;
-};
 
 struct Service {
     // Shared by the HTTP and HTTPS entries for one provider, which -i picks between, and by the DNS_A and DNS_AAAA entries, which -4 or -6 picks between.
@@ -90,7 +79,6 @@ static_assert( std::ranges::all_of(services, [](const auto &s) -> bool { if (dns
 // DNS_A and DNS_AAAA services answer in their query's family; the others answer in whichever family connected.
 bool serves_family(const Service& service, fip::AddressFamily family);
 
-// HTTPS proves who answered, and an authoritative nameserver's AA flag rules out a resolver answering for it; anything else could have come from the path.
 Trust trust_of(const Service& service);
 
 // What -s accepts: DNS for every DNS_* type, then each type by name.

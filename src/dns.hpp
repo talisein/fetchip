@@ -151,6 +151,17 @@ enum class DNSQueryClass : uint16_t {
     ANY = 255    // Any class (query for any class)
 };
 
+// Whether the server a DNS service asks is the authority for its name, or a public resolver answering it.
+enum class NameserverRole {
+    Authoritative,
+    Recursive,
+};
+
+struct Nameserver {
+    std::string_view host;
+    NameserverRole role;
+};
+
 struct DNSHeader {
     uint16_t id;       // 16-bit identifier assigned by the program
     DNSHeaderFlags flags;  // Flags field, containing control information

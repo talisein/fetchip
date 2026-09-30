@@ -297,11 +297,11 @@ DNSResolver::parse_dns_response(std::span<const char> response, const DNSMessage
     if (auto matches = check_matches_query(ctx, *message, query); !matches) {
         return std::unexpected(matches.error());
     }
-    if (auto authority = check_authority(ctx, *message, role); !authority) {
-        return std::unexpected(authority.error());
-    }
     if (auto status = check_response_status(ctx, *message); !status) {
         return std::unexpected(status.error());
+    }
+    if (auto authority = check_authority(ctx, *message, role); !authority) {
+        return std::unexpected(authority.error());
     }
     auto answer = first_address_record(ctx, message->get_answers());
     if (!answer) {

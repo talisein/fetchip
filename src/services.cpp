@@ -17,6 +17,7 @@ Trust trust_of(const Service& service)
     if (service.type == ServiceType::HTTPS) {
         return Trust::Authenticated;
     }
+    // parse_dns_response refuses an authority's reply without AA, so nothing on the path answered in its place.
     if (service.resolver && service.resolver->role == NameserverRole::Authoritative) {
         return Trust::Authoritative;
     }

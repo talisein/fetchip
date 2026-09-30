@@ -35,22 +35,22 @@ bool IPConsensus::record(std::string_view text, Trust trust)
     }
     // Canonical text, so different spellings of one IPv6 address agree.
     const auto canonical = address.to_string();
-    ++tally->get().votes[canonical];
-    auto strongest = tally->get().strongest.try_emplace(canonical, trust).first;
-    strongest->second = std::max(strongest->second, trust);
+    auto& vote = tally->get().votes[canonical];
+    ++vote.count;
+    vote.strongest = std::max(vote.strongest, trust);
     ++tally->get().total;
     return true;
 }
 
-std::map<std::string, std::size_t>::const_iterator IPConsensus::Tally::leader() const
+std::map<std::string, IPConsensus::Vote>::const_iterator IPConsensus::Tally::leader() const
 {
-    return std::ranges::max_element(std::views::values(votes)).base();
+    return std::ranges::max_element(votes, {}, [](const auto& entry) { return entry.second.count; });
 }
 
 std::size_t IPConsensus::Tally::leader_votes() const
 {
     auto it = leader();
-    return it == votes.end() ? 0 : it->second;
+    return it == votes.end() ? 0 : it->second.count;
 }
 
 bool IPConsensus::Tally::leader_trusted(Trust needs) const
@@ -59,7 +59,7 @@ bool IPConsensus::Tally::leader_trusted(Trust needs) const
         return true;
     }
     auto it = leader();
-    return it != votes.end() && strongest.at(it->first) >= needs;
+    return it != votes.end() && it->second.strongest >= needs;
 }
 
 std::optional<IPConsensus::Winner> IPConsensus::Tally::winner(Trust needs) const
@@ -68,19 +68,19 @@ std::optional<IPConsensus::Winner> IPConsensus::Tally::winner(Trust needs) const
     if (it == votes.end()) {
         return std::nullopt;
     }
-    const bool quorum = it->second >= min_agreeing_answers;
-    const bool strict_majority = 2 * it->second > total;
+    const bool quorum = it->second.count >= min_agreeing_answers;
+    const bool strict_majority = 2 * it->second.count > total;
     if (!quorum || !strict_majority || !leader_trusted(needs)) {
         return std::nullopt;
     }
-    return Winner {it->first, it->second, total};
+    return Winner {it->first, it->second.count, total};
 }
 
 std::size_t IPConsensus::Tally::needed(Trust needs) const
 {
     // k agreeing answers win when leader + k >= min_agreeing_answers (the quorum)
-    // and 2 * (leader + k) > total + k (a strict majority), and one of them must be
-    // trusted if no vote for the leader is yet.
+    // and 2 * (leader + k) > total + k (a strict majority), and one more is needed
+    // when no vote for the leader is yet at the required trust.
     const auto leader = leader_votes();
     const std::size_t for_majority = total + 1 > 2 * leader ? total + 1 - 2 * leader : 0;
     const std::size_t for_quorum = leader < min_agreeing_answers ? min_agreeing_answers - leader : 0;

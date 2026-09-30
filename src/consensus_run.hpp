@@ -44,7 +44,6 @@ private:
     fip::context& ctx;
     std::vector<Service> candidates;
     PublicIpQuery query;
-    // Computed from candidates, so both must stay declared after it.
     Trust winner_needs;
     IPConsensus consensus;
     std::list<Query> queries;
