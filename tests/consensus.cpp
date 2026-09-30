@@ -35,6 +35,7 @@ int main() {
             expect(c.winner().transform([](const auto& w) { return w.address; }) == s.winner) << "after" << s.answer;
         }
     } | std::vector<std::vector<step>> {
+        // One answer is a majority of one but short of the two-answer quorum; a second agreeing answer wins.
         {{"1.1.1.1", 1, 2, {}}, {"1.1.1.1", 0, 2, "1.1.1.1"s}},
         {{"1.1.1.1", 1, 2, {}}, {"2.2.2.2", 1, 2, {}}, {"1.1.1.1", 0, 2, "1.1.1.1"s}},
         {{"1.1.1.1", 1, 2, {}}, {"2.2.2.2", 1, 2, {}}, {"3.3.3.3", 2, 2, {}}, {"2.2.2.2", 1, 2, {}}, {"2.2.2.2", 0, 2, "2.2.2.2"s}},

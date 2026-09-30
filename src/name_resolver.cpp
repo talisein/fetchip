@@ -41,15 +41,19 @@ namespace {
     template<class Bytes>
     std::expected<Bytes, std::error_code> address_bytes(sd_json_variant* array)
     {
+        using Byte = typename Bytes::value_type;
         Bytes bytes;
         if (!sd_json_variant_is_array(array) || sd_json_variant_elements(array) != bytes.size()) {
             return std::unexpected(std::make_error_code(std::errc::bad_message));
         }
-        const auto is_byte = [](sd_json_variant* byte) { return sd_json_variant_is_unsigned(byte) && sd_json_variant_unsigned(byte) <= 0xff; };
+        const auto is_byte = [](sd_json_variant* byte) {
+            return sd_json_variant_is_unsigned(byte) && sd_json_variant_unsigned(byte) <= std::numeric_limits<Byte>::max();
+        };
         if (!std::ranges::all_of(elements_of(array), is_byte)) {
             return std::unexpected(std::make_error_code(std::errc::bad_message));
         }
-        std::ranges::transform(elements_of(array), bytes.begin(), [](sd_json_variant* byte) { return static_cast<unsigned char>(sd_json_variant_unsigned(byte)); });
+        const auto to_byte = [](sd_json_variant* byte) { return static_cast<Byte>(sd_json_variant_unsigned(byte)); };
+        std::ranges::transform(elements_of(array), bytes.begin(), to_byte);
         return bytes;
     }
 

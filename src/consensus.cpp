@@ -5,6 +5,9 @@
 #include "net.hpp"
 
 namespace {
+    // README: an address wins once at least two services report it.
+    constexpr std::size_t min_agreeing_answers { 2 };
+
     std::optional<std::size_t> slot(fip::AddressFamily family)
     {
         switch (family) {
@@ -50,7 +53,12 @@ std::size_t IPConsensus::Tally::leader_votes() const
 std::optional<IPConsensus::Winner> IPConsensus::Tally::winner() const
 {
     auto it = leader();
-    if (it == votes.end() || it->second < 2 || 2 * it->second <= total) {
+    if (it == votes.end()) {
+        return std::nullopt;
+    }
+    const bool quorum = it->second >= min_agreeing_answers;
+    const bool strict_majority = 2 * it->second > total;
+    if (!quorum || !strict_majority) {
         return std::nullopt;
     }
     return Winner {it->first, it->second, total};
@@ -58,11 +66,12 @@ std::optional<IPConsensus::Winner> IPConsensus::Tally::winner() const
 
 std::size_t IPConsensus::Tally::needed() const
 {
-    // k agreeing answers win when leader + k >= 2 and 2 * (leader + k) > total + k.
+    // k agreeing answers win when leader + k >= min_agreeing_answers (the quorum)
+    // and 2 * (leader + k) > total + k (a strict majority).
     const auto leader = leader_votes();
     const std::size_t for_majority = total + 1 > 2 * leader ? total + 1 - 2 * leader : 0;
-    const std::size_t for_pair = leader < 2 ? 2 - leader : 0;
-    return std::max(for_majority, for_pair);
+    const std::size_t for_quorum = leader < min_agreeing_answers ? min_agreeing_answers - leader : 0;
+    return std::max(for_majority, for_quorum);
 }
 
 std::optional<std::reference_wrapper<IPConsensus::Tally>> IPConsensus::tally_for(fip::AddressFamily family)

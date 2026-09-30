@@ -1,5 +1,7 @@
 #include <iostream>
+#include <cctype>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <netdb.h>
 #include <array>
@@ -123,19 +125,19 @@ query_http_public_ip(fip::context& ctx, Service service)
         ctx.log.debug("Failed to fetch ip from {}: {}", service.address, res.error().message());
         co_return std::unexpected(res.error());
     }
-    const auto is_space = [](char c) { return " \t\r\n"sv.contains(c); };
-    auto body = *res | std::views::reverse | std::views::drop_while(is_space) | std::views::reverse | std::ranges::to<std::string>();
-    auto family = address_family_of(body);
+    const auto last = res->find_last_not_of(" \t\r\n"sv);
+    res->erase(last == std::string::npos ? 0 : last + 1);
+    auto family = address_family_of(*res);
     if (!family) {
-        ctx.log.debug("Response from {} is not an IP address: {}", service.address, body);
+        ctx.log.debug("Response from {} is not an IP address: {}", service.address, *res);
         co_return std::unexpected(std::make_error_code(std::errc::bad_message));
     }
     if (ctx.requested_family != fip::AddressFamily::Any && *family != ctx.requested_family) {
         ctx.log.debug("Response from {} is {}, wanted {}", service.address, magic_enum::enum_name(*family), magic_enum::enum_name(ctx.requested_family));
         co_return std::unexpected(std::make_error_code(std::errc::address_family_not_supported));
     }
-    ctx.log.debug("Fetched current ip {} from {}", body, service.address);
-    co_return body;
+    ctx.log.debug("Fetched current ip {} from {}", *res, service.address);
+    co_return std::move(*res);
 }
 
 asio::awaitable<std::expected<std::string, std::error_code>>
@@ -214,7 +216,7 @@ int main(int argc, char* argv[]) {
             if (!print_line(options.help({""}))) {
                 return EXIT_FAILURE;
             }
-            return 0;
+            return EXIT_SUCCESS;
         }
 
         if (result.count("list")) {
@@ -233,7 +235,7 @@ int main(int argc, char* argv[]) {
                     return EXIT_FAILURE;
                 }
             }
-            return 0;
+            return EXIT_SUCCESS;
         }
 
         std::optional<ServiceType> selectedType;
@@ -364,7 +366,7 @@ int main(int argc, char* argv[]) {
                 ctx.log.error("Cannot write {} to stdout: {}", *answer, printed.error().message());
                 return EXIT_FAILURE;
             }
-            return 0;
+            return EXIT_SUCCESS;
         }
 
         // Services are drawn from the back, so each is asked at most once.
@@ -461,11 +463,11 @@ int main(int argc, char* argv[]) {
 
     } catch (const cxxopts::exceptions::exception& e) {
         std::cerr << "Error parsing options: " << e.what() << std::endl;
-        return 1;
+        return EXIT_FAILURE;
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
