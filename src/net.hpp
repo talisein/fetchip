@@ -10,14 +10,13 @@
 #include <string_view>
 
 #include "address_family.hpp"
+#include "version.hpp"
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 
 namespace fip
 {
-    constexpr std::string_view user_agent = "fetchip";
-
     constexpr std::chrono::seconds name_resolution_timeout {3};
     constexpr std::chrono::seconds dns_resolution_timeout {2};
     constexpr std::chrono::seconds http_execution_timeout {5};

@@ -10,6 +10,10 @@ lib_srcs = [
   'name_resolver.cpp',
 ]
 
+version_hpp = configure_file(input: 'version.hpp.in',
+                             output: 'version.hpp',
+                             configuration: {'VERSION': meson.project_version()})
+
 lib = static_library('fetchip', lib_srcs,
                      dependencies: deps,
                      install: false)
