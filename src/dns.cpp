@@ -184,17 +184,19 @@ namespace {
         return static_cast<uint16_t>(pos);
     }
 
-    std::expected<std::string, std::error_code>
-    dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) {
+    struct WireName {
+        std::string prefix;
+        std::string suffix;
+        // Where the caller's parse continues: just past the first compression
+        // pointer, since a pointer ends the name on the wire.
+        std::optional<uint16_t> resume;
+    };
+
+    std::expected<WireName, std::error_code>
+    walk_name(fip::context& ctx, std::istream& is, const jump_table_t& jump_table) {
         std::ostringstream hostname;
         auto os_iter = std::ostreambuf_iterator(hostname);
         auto view = std::ranges::subrange(std::istreambuf_iterator(is), std::istreambuf_iterator<char>());
-        const auto start_pos = wire_offset(is);
-        if (!start_pos) {
-            return std::unexpected(start_pos.error());
-        }
-        // Where the caller's parse continues: just past the first compression
-        // pointer, since a pointer ends the name on the wire.
         std::optional<uint16_t> resume;
 
         do {
@@ -211,11 +213,7 @@ namespace {
 
             // If label size is zero, we're done.
             if (0 == label_size) {
-                auto res = hostname.str();
-                if (0 < res.size()) res.pop_back(); // Remove trailing .
-                if (resume) is.seekg(*resume);
-                auto [it, _] = jump_table.emplace(*start_pos, std::move(res));
-                return it->second;
+                return WireName{hostname.str(), {}, resume};
             }
 
             const bool is_compressed = (label_size & compression_pointer_flag) == compression_pointer_flag;
@@ -228,17 +226,7 @@ namespace {
 
                 auto jump = static_cast<uint16_t>((label_size & compression_offset_high_mask) << compression_offset_high_shift) | next;
                 if (auto it = jump_table.find(jump); it != jump_table.end()) {
-                    // The accumulated prefix ends in '.'; the cached name has none.
-                    auto res = hostname.str() + it->second;
-                    if (0 < res.size() && '.' == res.back()) res.pop_back(); // Pointer to the root name
-                    if (max_name_text < res.size()) {
-                        ctx.log.debug("Excessive hostname size {} > {}: '{}'", res.size(), max_name_text, res);
-                        return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
-                    }
-
-                    if (resume) is.seekg(*resume);
-                    auto [res_it, _] = jump_table.emplace(*start_pos, std::move(res));
-                    return res_it->second;
+                    return WireName{hostname.str(), it->second, resume};
                 }
 
                 // A pointer may only reference a prior occurrence, so each jump
@@ -274,6 +262,30 @@ namespace {
         } while (hostname.view().size() < max_name_octets);
         ctx.log.debug("Excessive hostname size {} > {}: '{}'", hostname.view().size() + 1, max_name_octets, hostname.view());
         return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
+    }
+
+    std::expected<std::string, std::error_code>
+    dnshost_to_host(fip::context& ctx, std::istream& is, jump_table_t& jump_table) {
+        const auto start_pos = wire_offset(is);
+        if (!start_pos) {
+            return std::unexpected(start_pos.error());
+        }
+        auto wire = walk_name(ctx, is, jump_table);
+        if (!wire) {
+            return std::unexpected(wire.error());
+        }
+
+        // The prefix ends in '.' and a cached suffix has none, unless the suffix is the root.
+        auto name = std::move(wire->prefix) + wire->suffix;
+        if (0 < name.size() && '.' == name.back()) name.pop_back();
+        if (max_name_text < name.size()) {
+            ctx.log.debug("Excessive hostname size {} > {}: '{}'", name.size(), max_name_text, name);
+            return std::unexpected(make_error_code(DNSError::DNSHostToHostExcessiveHostnameSize));
+        }
+
+        if (wire->resume) is.seekg(*wire->resume);
+        auto [it, _] = jump_table.emplace(*start_pos, std::move(name));
+        return it->second;
     }
 }
 
