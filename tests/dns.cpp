@@ -201,7 +201,7 @@ int main() {
         expect(!result.has_value());
         expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
-        {"\x0Atenletters\x0Atenletters\x0Atenletters\003com"sv, DNSError::SerializeStreamFailure},
+        {"www.example.com"sv, DNSError::SerializeStreamFailure},
     };
 
     "query serialize exception"_test = [] (const auto &in) {
@@ -217,7 +217,7 @@ int main() {
         expect(!result.has_value());
         expect(eq(result.error(), error));
     } | std::vector<std::pair<std::string_view, DNSError>> {
-        {"\x0Atenletters\x0Atenletters\x0Atenletters\003com"sv, DNSError::SerializeUnexpectedException},
+        {"www.example.com"sv, DNSError::SerializeUnexpectedException},
     };
 
 
@@ -721,6 +721,103 @@ int main() {
         {"miku.cute", { DNSQueryType::AAAA, DNSQueryClass::IN, 60, 16 }, RData_AAAA {}},
         {"miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 14 }, RData_TXT { {"198.51.100.39"} }},
         {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 20 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 16 }, std::vector<uint8_t>(16) } } }},
+    };
+
+    // Every record here declares the wrong lengths; the wire and the record read back from it must carry the rdata's own.
+    "serialize derives lengths from the rdata"_test = [] (const auto& derived) {
+        const auto& [record, wire, formatted] = derived;
+        fip::context ctx(39, true);
+        std::array<char, 100> buf;
+        std::ospanstream out(buf);
+
+        expect(record.serialize(ctx, out).has_value()) << formatted;
+        expect(eq(wire, std::string_view(out.span()))) << formatted;
+
+        std::ispanstream in {out.span()};
+        jump_table_t jump_table;
+        const auto deserialized = DNSResourceRecord::deserialize(ctx, in, jump_table);
+        expect(fatal(deserialized.has_value())) << formatted;
+        expect(eq(formatted, std::format("{}", *deserialized)));
+        // RDLENGTH covered the rdata exactly, so the record read back ends where the wire does.
+        expect(eq(in.peek(), std::ispanstream::traits_type::eof())) << formatted;
+    } | std::vector<std::tuple<DNSResourceRecord, std::string_view, std::string_view>> {
+        // Declares no rdata at all.
+        {{"miku.cute", { DNSQueryType::A, DNSQueryClass::IN, 60, 0 }, RData_A { {39, 139, 239, 39} }},
+         "\4miku\4cute\0\0\1\0\1\0\0\0<\0\4\47\213\357\47"sv,
+         "DNSResourceRecord { Name: miku.cute, Type: A, Class: IN, TTL: 60, RDataLength: 4, RData_A { ipv4_address: 39.139.239.39 } }"sv},
+        // Declares an A record's length.
+        {{"miku.cute", { DNSQueryType::AAAA, DNSQueryClass::IN, 60, 4 }, RData_AAAA { {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xd8, 0x4d, 0x9f, 0x16, 0x28, 0x34, 0xb1} }},
+         "\4miku\4cute\0\0\34\0\1\0\0\0<\0\20\376\200\0\0\0\0\0\0\252\330\115\237\26\50\64\261"sv,
+         "DNSResourceRecord { Name: miku.cute, Type: AAAA, Class: IN, TTL: 60, RDataLength: 16, RData_AAAA { ipv6_address: fe80::aad8:4d9f:1628:34b1 } }"sv},
+        // Declares only the first string.
+        {{"miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 14 }, RData_TXT { {"198.51.100.39", "second"} }},
+         "\4miku\4cute\0\0\20\0\1\0\0\0<\0\25\015198.51.100.39\6second"sv,
+         "DNSResourceRecord { Name: miku.cute, Type: TXT, Class: IN, TTL: 60, RDataLength: 21, RData_TXT: 198.51.100.39 second }"sv},
+        // The dig write capture's OPT record, declaring the right RDLENGTH but more option data than there is.
+        {{"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 12 }, RData_OPT { { DNSOption { { EDNSOptionCode::COOKIE, 39 }, {0x19, 0xc4, 0xde, 0xfc, 0x2f, 0xe0, 0x07, 0x5d} } } }},
+         "\0\0)\4\320\0\0\0\0\0\f\0\n\0\10\31\304\336\374/\340\7]"sv,
+         "EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 1232, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 12, EDNS0_Option { OptionCode: COOKIE, OptionDataSize: 8, Data: { 0x19C4DEFC2FE0075D } } }"sv},
+        // An RDLENGTH that counts only the first option, and options declaring less and more data than they have.
+        {{"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 12 }, RData_OPT { { DNSOption { { EDNSOptionCode::COOKIE, 0 }, {0x19, 0xc4, 0xde, 0xfc, 0x2f, 0xe0, 0x07, 0x5d} }, DNSOption { { EDNSOptionCode::Padding, 16 }, std::vector<uint8_t>(3) } } }},
+         "\0\0)\4\320\0\0\0\0\0\23\0\n\0\10\31\304\336\374/\340\7]\0\f\0\3\0\0\0"sv,
+         "EDNS_ResourceRecord { Type: OPT, UDP_PayloadSize: 1232, ExtendedRCode: 0, Version: 0, Flags: 0x0000, RDataLength: 19, EDNS0_Option { OptionCode: COOKIE, OptionDataSize: 8, Data: { 0x19C4DEFC2FE0075D } }, EDNS0_Option { OptionCode: Padding, OptionDataSize: 3, Data: { 0x000000 } } }"sv},
+    };
+
+    "serialize rdata at size limit"_test = [] (const auto& record) {
+        fip::context ctx(39, true);
+        std::stringstream ss;
+
+        expect(record.serialize(ctx, ss).has_value()) << enum_name_or_value(record.blob.type);
+        jump_table_t jump_table;
+        const auto deserialized = DNSResourceRecord::deserialize(ctx, ss, jump_table);
+        expect(fatal(deserialized.has_value())) << enum_name_or_value(record.blob.type);
+        // The limit is spelled out, not taken from the constant under test.
+        expect(eq(deserialized->blob.rdlength, 65535)) << enum_name_or_value(record.blob.type);
+        // The declared lengths are the right ones here, so the record must come back whole.
+        expect(std::format("{}", *deserialized) == std::format("{}", record)) << enum_name_or_value(record.blob.type);
+    } | std::vector<DNSResourceRecord> {
+        // 257 strings of 1 + 254 octets.
+        {"miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 65535 }, RData_TXT { std::vector(257, std::string(254, 'x')) }},
+        // One option of 4 + 65531 octets.
+        {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 65535 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 65531 }, std::vector<uint8_t>(65531) } } }},
+    };
+
+    "serialize rdata past size limit"_test = [] (const auto& record) {
+        fip::context ctx(39, true);
+        // Room for any record, so only the length check can refuse one.
+        std::ostringstream ss;
+
+        const auto serialized = record.serialize(ctx, ss);
+        expect(!serialized.has_value()) << enum_name_or_value(record.blob.type);
+        if (!serialized) {
+            expect(eq(serialized.error(), DNSError::SerializeExcessiveRdataSize)) << enum_name_or_value(record.blob.type);
+        }
+        // Refused before the name, so no header claims a length the rdata does not have.
+        expect(ss.view().empty()) << enum_name_or_value(record.blob.type);
+    } | std::vector<DNSResourceRecord> {
+        // 256 strings of 1 + 255 octets, one octet past the 65535 RDLENGTH holds.
+        {"miku.cute", { DNSQueryType::TXT, DNSQueryClass::IN, 60, 0 }, RData_TXT { std::vector(256, std::string(255, 'x')) }},
+        // One option of 4 + 65532 octets.
+        {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 0 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 0 }, std::vector<uint8_t>(65532) } } }},
+        // An option whose data alone is too long for its OPTION-LENGTH.
+        {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 0 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 0 }, std::vector<uint8_t>(65536) } } }},
+        // Two options of 4 + 32764 octets, each short enough alone.
+        {"", { DNSQueryType::OPT, static_cast<DNSQueryClass>(1232), 0, 0 }, RData_OPT { { DNSOption { { EDNSOptionCode::Padding, 0 }, std::vector<uint8_t>(32764) }, DNSOption { { EDNSOptionCode::Padding, 0 }, std::vector<uint8_t>(32764) } } }},
+    };
+
+    "serialize opt rdata past size limit"_test = [] {
+        fip::context ctx(39, true);
+        // The first option fits; the second takes the rdata to 12 + 4 + 65520 octets, one past 65535.
+        const RData_OPT opt { { DNSOption { { EDNSOptionCode::COOKIE, 8 }, std::vector<uint8_t>(8) }, DNSOption { { EDNSOptionCode::Padding, 0 }, std::vector<uint8_t>(65520) } } };
+        std::ostringstream ss;
+
+        const auto serialized = opt.serialize(ctx, ss);
+        expect(!serialized.has_value());
+        if (!serialized) {
+            expect(eq(serialized.error(), DNSError::SerializeExcessiveRdataSize));
+        }
+        // Refused before the first option, so not even the one that fits reaches the wire.
+        expect(ss.view().empty());
     };
 
     // blobify seeks only inside lens_load and lens_store, which fetchip does not call, so no deserialize path reaches these.

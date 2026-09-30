@@ -306,6 +306,7 @@ enum class DNSError
     SerializeUnexpectedException,
     SerializeStreamFailure,
     SerializeExcessiveTextSize,
+    SerializeExcessiveRdataSize,
     SerializeUnimplementedType,
     DeserializeUnexpectedException,
     DeserializeStreamFailure,
@@ -337,6 +338,8 @@ constexpr size_t max_name_octets { 255 };
 constexpr size_t max_name_text { max_name_octets - 2 };
 // RFC 1035 §3.3: a <character-string> is one length octet followed by that many octets.
 constexpr size_t max_character_string_octets { std::numeric_limits<uint8_t>::max() };
+// RFC 1035 §3.2.1: RDLENGTH counts the RDATA's octets in 16 bits.
+constexpr size_t max_rdata_octets { std::numeric_limits<uint16_t>::max() };
 // RFC 1035 §4.1.1: the header is six 16-bit fields.
 constexpr size_t message_header_octets { 6 * sizeof(uint16_t) };
 // RFC 1035 §4.1.4: a compression pointer is two octets, both high bits set and then a 14-bit offset.
